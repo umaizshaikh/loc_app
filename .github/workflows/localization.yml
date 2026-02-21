@@ -1,0 +1,64 @@
+name: AI Localization Pipeline
+
+on:
+  push:
+    paths:
+      - 'ui/localization/en.json'
+      - 'scripts/**'
+      - '.github/workflows/localization.yml'
+
+jobs:
+  localize:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout loc_app
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install loc_app dependencies
+        run: |
+          pip install -r requirements.txt
+
+      # ---- Clone localization API ----
+      - name: Clone localization-api
+        run: |
+          git clone https://github.com/hannah-choi-hs/localization-api.git
+
+      - name: Install localization-api dependencies
+        run: |
+          cd localization-api
+          pip install -r requirements.txt
+          pip install google-generativeai python-dotenv
+
+      - name: Configure Gemini API Key
+        run: |
+          cd localization-api
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
+
+      - name: Initialize Translation Memory
+        run: |
+          cd localization-api
+          python database/vector_store.py
+
+      - name: Start Localization API
+        run: |
+          cd localization-api
+          uvicorn api.main:app --port 8000 &
+          sleep 10
+
+      - name: Run Localization Script
+        run: |
+          python scripts/generate_hi.py
+
+      - name: Commit Updated hi.json
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add ui/localization/hi.json
+          git commit -m "Auto-generated Hindi localization [CI]" || echo "No changes to commit"
+          git push

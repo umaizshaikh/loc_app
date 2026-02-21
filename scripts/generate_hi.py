@@ -3,7 +3,7 @@ import requests
 import time
 import os
 
-API_URL = "http://127.0.0.1:8000/translate"
+API_URL = os.getenv("LOCALIZATION_API_URL", "http://127.0.0.1:8000/translate")
 EN_PATH = "ui/localization/en.json"
 HI_PATH = "ui/localization/hi.json"
 
@@ -67,4 +67,8 @@ def main():
     print(f"Total time: {round(time.time() - start_time, 2)}s")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"\n❌ Localization failed: {e}")
+        exit(1)
