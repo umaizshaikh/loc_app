@@ -59,6 +59,6 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git add ui/localization/hi.json
-          git commit -m "Auto-generated Hindi localization [CI]" || echo "No changes to commit"
+          git add localization/hi.json
+          git diff --cached --quiet || git commit -m "Auto-generated Hindi localization [CI]"
           git push
