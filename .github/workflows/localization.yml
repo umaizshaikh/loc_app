@@ -27,7 +27,7 @@ jobs:
       # ---- Clone localization API ----
       - name: Clone localization-api
         run: |
-          git clone https://github.com/hannah-choi-hs/localization-api.git
+          git clone https://github.com/umaizshaikh/localization-api.git
 
       - name: Install localization-api dependencies
         run: |
