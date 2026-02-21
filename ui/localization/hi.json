@@ -1,27 +1,102 @@
 {
-    "window_title": "मिनी लोकलाइज़ेशन डेमो",
-    "heading_title": "डेमो ऐप में आपका स्वागत है",
-    "paragraph_1": "यह एप्लिकेशन रनटाइम भाषा परिवर्तन प्रदर्शित करता है।",
-    "paragraph_2": "सभी UI टेक्स्ट JSON फ़ाइलों से लोड होते हैं।",
-    "label_name": "नाम",
-    "label_email": "ईमेल",
-    "dropdown_label": "भूमिका चुनें",
-    "dropdown_option_1": "डेवलपर",
-    "dropdown_option_2": "प्रबंधक",
-    "dropdown_option_3": "डिज़ाइनर",
-    "btn_submit": "जमा करें",
-    "btn_clear": "साफ करें",
-    "btn_dummy": "कार्य",
-    "status_ready": "तैयार",
-    "status_submitted": "फॉर्म जमा किया गया",
-    "menu_file": "फ़ाइल",
-    "menu_settings": "सेटिंग्स",
-    "menu_help": "मदद",
-    "menu_open": "खोलें",
-    "menu_save": "सहेजें",
-    "menu_exit": "बाहर निकलें",
-    "menu_switch_en": "अंग्रेज़ी में बदलें",
-    "menu_switch_hi": "हिंदी में बदलें",
-    "menu_about": "जानकारी",
-    "about_message": "यह एक लोकलाइज़ेशन डेमो एप्लिकेशन है।"
+  "window_title": {
+    "source": "Mini Localization Demo",
+    "translation": "लघु स्थानीयकरण डेमो"
+  },
+  "heading_title": {
+    "source": "Welcome to the Demo App",
+    "translation": "डेमो ऐप में आपका स्वागत है"
+  },
+  "paragraph_1": {
+    "source": "This application demonstrates runtime language switching.",
+    "translation": "यह एप्लिकेशन रनटाइम भाषा स्विचिंग को प्रदर्शित करता है।"
+  },
+  "paragraph_2": {
+    "source": "All UI strings are loaded from JSON files.",
+    "translation": "सभी UI स्ट्रिंग JSON फ़ाइलों से लोड होते हैं।"
+  },
+  "label_name": {
+    "source": "Name",
+    "translation": "नाम"
+  },
+  "label_email": {
+    "source": "Email",
+    "translation": "ईमेल"
+  },
+  "dropdown_label": {
+    "source": "Select Role",
+    "translation": "भूमिका चुनें"
+  },
+  "dropdown_option_1": {
+    "source": "Developer",
+    "translation": "डेवलपर"
+  },
+  "dropdown_option_2": {
+    "source": "Manager",
+    "translation": "प्रबंधक"
+  },
+  "dropdown_option_3": {
+    "source": "Designer",
+    "translation": "डिजाइनर"
+  },
+  "btn_submit": {
+    "source": "Submit",
+    "translation": "जमा करें"
+  },
+  "btn_clear": {
+    "source": "Clear Form",
+    "translation": "फ़ॉर्म साफ़ करें"
+  },
+  "btn_dummy": {
+    "source": "Action",
+    "translation": "कार्य"
+  },
+  "status_ready": {
+    "source": "Ready",
+    "translation": "तैयार"
+  },
+  "status_submitted": {
+    "source": "Form Submitted",
+    "translation": "फ़ॉर्म सबमिट किया गया"
+  },
+  "menu_file": {
+    "source": "File",
+    "translation": "फ़ाइल"
+  },
+  "menu_settings": {
+    "source": "Settings",
+    "translation": "सेटिंग्स"
+  },
+  "menu_help": {
+    "source": "Help",
+    "translation": "सहायता"
+  },
+  "menu_open": {
+    "source": "Open",
+    "translation": "खोलें"
+  },
+  "menu_save": {
+    "source": "Save",
+    "translation": "सहेजें"
+  },
+  "menu_exit": {
+    "source": "Exit",
+    "translation": "निकास"
+  },
+  "menu_switch_en": {
+    "source": "Switch to English",
+    "translation": "अंग्रेजी में बदलें"
+  },
+  "menu_switch_hi": {
+    "source": "Switch to Hindi",
+    "translation": "हिंदी में बदलें"
+  },
+  "menu_about": {
+    "source": "About",
+    "translation": "जानकारी"
+  },
+  "about_message": {
+    "source": "This is a localization demo application.",
+    "translation": "यह एक लोकलाइज़ेशन डेमो ऐप है।"
   }
+}
