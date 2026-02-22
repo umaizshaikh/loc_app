@@ -39,10 +39,6 @@
     "source": "Designer",
     "translation": "डिजाइनर"
   },
-  "btn_submit": {
-    "source": "Did you Submit?",
-    "translation": "क्या आपने सबमिट किया?"
-  },
   "btn_clear": {
     "source": "Clear Form",
     "translation": "फ़ॉर्म साफ़ करें"
@@ -98,5 +94,9 @@
   "about_message": {
     "source": "This is a localization demo application.",
     "translation": "यह एक लोकलाइज़ेशन डेमो ऐप है।"
+  },
+  "btn_submit": {
+    "source": "Submit",
+    "translation": "जमा करें"
   }
 }
