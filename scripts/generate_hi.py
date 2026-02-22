@@ -16,6 +16,7 @@ import requests
 # ---------------------------------------------------------------------------
 API_URL = os.getenv("LOCALIZATION_API_URL", "http://127.0.0.1:8000/translate")
 EVALUATE_URL = os.getenv("LOCALIZATION_API_URL", "http://127.0.0.1:8000").rstrip("/") + "/evaluate"
+LOCALIZATION_DIR = "ui/localization"
 EN_PATH = "ui/localization/en.json"
 HI_PATH = "ui/localization/hi.json"
 QA_REPORT_DIR = "localization"
@@ -32,6 +33,24 @@ def load_json_safe(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+
+def discover_source_files():
+    """Discover all en*.json files in localization directory. Returns sorted list."""
+    if not os.path.exists(LOCALIZATION_DIR):
+        return []
+    files = []
+    for filename in os.listdir(LOCALIZATION_DIR):
+        if filename.startswith("en") and filename.endswith(".json"):
+            files.append(os.path.join(LOCALIZATION_DIR, filename))
+    return sorted(files)
+
+
+def map_to_target_file(source_file):
+    """Map en*.json to corresponding hi*.json."""
+    basename = os.path.basename(source_file)
+    target_basename = basename.replace("en", "hi", 1)
+    return os.path.join(LOCALIZATION_DIR, target_basename)
 
 
 def load_translation_cache():
@@ -137,13 +156,16 @@ def extract_json_from_text(text: str):
 class ChangeDetectorAgent:
     """Loads source/target JSON and detects new or changed keys. Tracks reused strings."""
 
-    def __init__(self, en_path=EN_PATH, hi_path=HI_PATH):
+    def __init__(self, en_path=None, hi_path=None):
         self.en_path = en_path
         self.hi_path = hi_path
 
-    def detect(self):
-        en_strings = load_json_safe(self.en_path)
-        existing_hi = load_json_safe(self.hi_path)
+    def detect(self, en_path=None, hi_path=None):
+        """Detect changes for a specific file pair. If paths provided, use them; else use instance paths."""
+        en_path = en_path or self.en_path
+        hi_path = hi_path or self.hi_path
+        en_strings = load_json_safe(en_path)
+        existing_hi = load_json_safe(hi_path)
 
         changes = {}
         existing_translations = {}
@@ -625,11 +647,12 @@ class ReportAgent:
         self.report_dir = report_dir
         self.report_path = report_path
 
-    def generate(self, detector_result, improvement_result, validation_result, execution_time_seconds):
+    def generate(self, detector_result, improvement_result, validation_result, execution_time_seconds, processed_files=None):
         det_stats = detector_result["stats"]
         impr_stats = improvement_result["stats"]
         metrics = validation_result["metrics"]
         status = validation_result["status"]
+        processed_files = processed_files or []
 
         low_items_payload = []
         for i in metrics["low_confidence_items"]:
@@ -647,6 +670,7 @@ class ReportAgent:
         report = {
             "threshold": CONFIDENCE_THRESHOLD,
             "quality_threshold": QUALITY_THRESHOLD,
+            "processed_files": processed_files,
             "total_strings_in_source": det_stats["total_strings_in_source"],
             "strings_reused": det_stats["strings_reused"],
             "new_or_changed_strings": det_stats["new_or_changed_strings"],
@@ -696,7 +720,7 @@ class LocalizationOrchestrator:
 
     def __init__(self):
         self.translation_cache = load_translation_cache()
-        self.detector = ChangeDetectorAgent()
+        self.detector = ChangeDetectorAgent(en_path=EN_PATH, hi_path=HI_PATH)  # Defaults for backward compat
         self.translator = TranslationAgent(translation_cache=self.translation_cache)
         self.reflection = ReflectionAgent()
         self.improvement = ImprovementAgent(reflection_agent=self.reflection)
@@ -708,25 +732,127 @@ class LocalizationOrchestrator:
 
         print("\n[ORCHESTRATOR] Starting incremental localization with change detection...\n")
 
-        detector_result = self.detector.detect()
-        translation_result = self.translator.process(detector_result["changes"])
-        reflection_result = self.reflection.evaluate(translation_result)
-        improvement_result = self.improvement.improve(reflection_result)
-        validation_result = self.validator.validate(improvement_result)
+        # Discover all en*.json files
+        source_files = discover_source_files()
+        if not source_files:
+            print("[ORCHESTRATOR] No en*.json files found in localization directory.")
+            return
+
+        # Aggregate metrics across all files
+        all_detector_stats = {
+            "total_strings_in_source": 0,
+            "strings_reused": 0,
+            "new_or_changed_strings": 0,
+        }
+        all_translation_stats = {
+            "total_api_calls": 0,
+            "retries_performed": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        }
+        all_reflection_stats = {"total_reflection_calls": 0}
+        all_improvement_stats = {"total_improvement_attempts": 0}
+        all_validation_metrics = {
+            "average_confidence": 0.0,
+            "average_quality_score": 0.0,
+            "low_confidence_count": 0,
+            "low_confidence_items": [],
+            "total_reflection_calls": 0,
+            "total_improvement_attempts": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        }
+        processed_files = []
+        all_confidences = []
+        all_quality_scores = []
+        overall_status = "PASSED"
+
+        # Process each file
+        for source_file in source_files:
+            target_file = map_to_target_file(source_file)
+            source_basename = os.path.basename(source_file)
+            target_basename = os.path.basename(target_file)
+
+            print(f"[ORCHESTRATOR] Processing file: {source_basename}")
+            print(f"[ORCHESTRATOR] Target file: {target_basename}")
+
+            # Detect changes for this file
+            detector_result = self.detector.detect(en_path=source_file, hi_path=target_file)
+            
+            # Aggregate detector stats
+            all_detector_stats["total_strings_in_source"] += detector_result["stats"]["total_strings_in_source"]
+            all_detector_stats["strings_reused"] += detector_result["stats"]["strings_reused"]
+            all_detector_stats["new_or_changed_strings"] += detector_result["stats"]["new_or_changed_strings"]
+
+            # Process translation pipeline
+            translation_result = self.translator.process(detector_result["changes"])
+            reflection_result = self.reflection.evaluate(translation_result)
+            improvement_result = self.improvement.improve(reflection_result)
+            validation_result = self.validator.validate(improvement_result)
+
+            # Aggregate stats
+            all_translation_stats["total_api_calls"] += translation_result["stats"]["total_api_calls"]
+            all_translation_stats["retries_performed"] += translation_result["stats"]["retries_performed"]
+            all_translation_stats["cache_hits"] += translation_result["stats"].get("cache_hits", 0)
+            all_translation_stats["cache_misses"] += translation_result["stats"].get("cache_misses", 0)
+            all_reflection_stats["total_reflection_calls"] += reflection_result["stats"].get("total_reflection_calls", 0)
+            all_improvement_stats["total_improvement_attempts"] += improvement_result["stats"].get("total_improvement_attempts", 0)
+            
+            # Collect confidences and quality scores for averaging
+            for key, data in improvement_result["translations"].items():
+                all_confidences.append(data["confidence"])
+                all_quality_scores.append(data.get("quality_score", 0.0))
+
+            # Aggregate validation metrics
+            metrics = validation_result["metrics"]
+            all_validation_metrics["low_confidence_count"] += metrics["low_confidence_count"]
+            all_validation_metrics["low_confidence_items"].extend(metrics["low_confidence_items"])
+            if validation_result["status"] == "FAILED":
+                overall_status = "FAILED"
+
+            processed_files.append(source_basename)
+
+            # Merge reused + new translations and write target file
+            final_hi = dict(detector_result["existing_translations"])
+            for key, data in improvement_result["translations"].items():
+                final_hi[key] = data["entry"]
+
+            with open(target_file, "w", encoding="utf-8") as f:
+                json.dump(final_hi, f, ensure_ascii=False, indent=2)
+
+            print(f"[ORCHESTRATOR] Completed processing {source_basename}\n")
+
+        # Compute final averages
+        if all_confidences:
+            all_validation_metrics["average_confidence"] = sum(all_confidences) / len(all_confidences)
+        if all_quality_scores:
+            all_validation_metrics["average_quality_score"] = sum(all_quality_scores) / len(all_quality_scores)
+
+        # Update aggregated metrics
+        all_validation_metrics["total_reflection_calls"] = all_reflection_stats["total_reflection_calls"]
+        all_validation_metrics["total_improvement_attempts"] = all_improvement_stats["total_improvement_attempts"]
+        all_validation_metrics["cache_hits"] = all_translation_stats["cache_hits"]
+        all_validation_metrics["cache_misses"] = all_translation_stats["cache_misses"]
+
+        # Create aggregated results for reporting
+        aggregated_detector_result = {"stats": all_detector_stats}
+        aggregated_improvement_result = {"stats": all_translation_stats}
+        aggregated_validation_result = {
+            "status": overall_status,
+            "metrics": all_validation_metrics,
+        }
 
         elapsed = time.time() - start_time
-        self.reporter.generate(detector_result, improvement_result, validation_result, elapsed)
+        self.reporter.generate(
+            aggregated_detector_result,
+            aggregated_improvement_result,
+            aggregated_validation_result,
+            elapsed,
+            processed_files=processed_files,
+        )
 
-        # Merge reused + new translations and write hi.json
-        final_hi = dict(detector_result["existing_translations"])
-        for key, data in improvement_result["translations"].items():
-            final_hi[key] = data["entry"]
-
-        with open(HI_PATH, "w", encoding="utf-8") as f:
-            json.dump(final_hi, f, ensure_ascii=False, indent=2)
-
-        if validation_result["status"] == "FAILED":
-            low_confidence_items = validation_result["metrics"]["low_confidence_items"]
+        if overall_status == "FAILED":
+            low_confidence_items = all_validation_metrics["low_confidence_items"]
             print("\n[ORCHESTRATOR] --- Low confidence summary ---")
             for item in low_confidence_items:
                 print(f"  Key: {item['key']}")
@@ -741,7 +867,7 @@ class LocalizationOrchestrator:
 
         print("\n[ORCHESTRATOR] All translations meet 95% confidence threshold.")
         print("[ORCHESTRATOR] Localization complete.")
-        
+
         # Save updated cache
         save_translation_cache(self.translation_cache)
         print(f"[ORCHESTRATOR] Translation cache saved to {CACHE_PATH}")
