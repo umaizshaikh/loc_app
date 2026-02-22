@@ -19,8 +19,8 @@ EVALUATE_URL = os.getenv("LOCALIZATION_API_URL", "http://127.0.0.1:8000").rstrip
 LOCALIZATION_DIR = "ui/localization"
 EN_PATH = "ui/localization/en.json"
 HI_PATH = "ui/localization/hi.json"
-QA_REPORT_DIR = "localization"
-QA_REPORT_PATH = "localization/qa_report.json"
+QA_REPORT_DIR = "ui/localization"
+QA_REPORT_PATH = "ui/localization/qa_report.json"
 CACHE_PATH = "localization/translation_cache.json"
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.95"))
 QUALITY_THRESHOLD = float(os.getenv("QUALITY_THRESHOLD", "0.90"))
@@ -715,7 +715,7 @@ class ValidationAgent:
 # 6. ReportAgent
 # ---------------------------------------------------------------------------
 class ReportAgent:
-    """Generates localization/qa_report.json and prints CI summary block."""
+    """Generates ui/localization/qa_report.json and prints CI summary block."""
 
     def __init__(self, report_dir=QA_REPORT_DIR, report_path=QA_REPORT_PATH):
         self.report_dir = report_dir
