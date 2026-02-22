@@ -158,7 +158,7 @@ def generate_static_dashboards(translation_cache):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
   <title>Localization QA Metrics</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     body {{ font-family: system-ui, sans-serif; margin: 1rem; max-width: 900px; }}
     h1 {{ font-size: 1.25rem; }}
@@ -244,7 +244,11 @@ function renderCharts(history) {{
 }}
 
 renderSummary(METRICS_HISTORY);
-renderCharts(METRICS_HISTORY);
+if (typeof Chart !== 'undefined') {{
+  renderCharts(METRICS_HISTORY);
+}} else {{
+  document.querySelector('.chart-wrap').insertAdjacentHTML('afterend', '<p style="color:#666;">Charts require Chart.js. If opened from file, ensure you have internet.</p>');
+}}
   </script>
 </body>
 </html>
