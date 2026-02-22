@@ -828,19 +828,6 @@ class ReportAgent:
         with open(self.report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2)
 
-        # Append to metrics history for dashboard
-        metrics_entry = {
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "status": status,
-            "average_confidence": report["average_confidence"],
-            "average_quality": report["average_quality_score"],
-            "api_calls": report["total_api_calls"],
-            "cache_hits": report["cache_hits"],
-            "glossary_hits": report["glossary_hits"],
-            "reflection_calls": report["total_reflection_calls"],
-        }
-        append_metrics_history(metrics_entry)
-
         print(f"[REPORT] QA report generated at {self.report_path}")
 
         print("----------------------------------------")
@@ -1003,6 +990,21 @@ class LocalizationOrchestrator:
         all_validation_metrics["cache_misses"] = all_translation_stats["cache_misses"]
         all_validation_metrics["glossary_hits"] = all_translation_stats["glossary_hits"]
 
+        # Final aggregated variables for metrics history
+        final_status = overall_status
+        total_api_calls = all_translation_stats["total_api_calls"]
+        total_cache_hits = all_translation_stats["cache_hits"]
+        total_glossary_hits = all_translation_stats["glossary_hits"]
+        total_reflection_calls = all_reflection_stats["total_reflection_calls"]
+        average_confidence = (
+            sum(all_confidences) / len(all_confidences)
+            if all_confidences else 0.0
+        )
+        average_quality = (
+            sum(all_quality_scores) / len(all_quality_scores)
+            if all_quality_scores else 0.0
+        )
+
         # Create aggregated results for reporting
         aggregated_detector_result = {"stats": all_detector_stats}
         aggregated_improvement_result = {"stats": all_translation_stats}
@@ -1019,6 +1021,20 @@ class LocalizationOrchestrator:
             elapsed,
             processed_files=processed_files,
         )
+
+        # Append metrics history after report (using final aggregated values)
+        metrics_entry = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "status": final_status,
+            "average_confidence": round(average_confidence, 2),
+            "average_quality": round(average_quality, 2),
+            "api_calls": total_api_calls,
+            "cache_hits": total_cache_hits,
+            "glossary_hits": total_glossary_hits,
+            "reflection_calls": total_reflection_calls,
+        }
+        append_metrics_history(metrics_entry)
+        print("[METRICS DEBUG]", metrics_entry)
 
         if overall_status == "FAILED":
             low_confidence_items = all_validation_metrics["low_confidence_items"]
