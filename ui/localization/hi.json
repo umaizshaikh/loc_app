@@ -39,6 +39,10 @@
     "source": "Designer",
     "translation": "डिजाइनर"
   },
+  "btn_submit": {
+    "source": "Submit",
+    "translation": "जमा करें"
+  },
   "btn_clear": {
     "source": "Clear Form",
     "translation": "फ़ॉर्म साफ़ करें"
@@ -50,6 +54,10 @@
   "status_ready": {
     "source": "Ready",
     "translation": "तैयार"
+  },
+  "status_submitted": {
+    "source": "Submitted Successfully",
+    "translation": "सफलतापूर्वक सबमिट किया गया"
   },
   "menu_file": {
     "source": "File",
@@ -66,6 +74,10 @@
   "menu_open": {
     "source": "Open",
     "translation": "खोलें"
+  },
+  "menu_save": {
+    "source": "Sghyls",
+    "translation": "Sghyls"
   },
   "menu_exit": {
     "source": "Exit",
@@ -86,17 +98,5 @@
   "about_message": {
     "source": "This is a localization demo application.",
     "translation": "यह एक लोकलाइज़ेशन डेमो ऐप है।"
-  },
-  "btn_submit": {
-    "source": "Submit",
-    "translation": "जमा करें"
-  },
-  "status_submitted": {
-    "source": "Submitted Successfully",
-    "translation": "सफलतापूर्वक सबमिट किया गया"
-  },
-  "menu_save": {
-    "source": "Sghyls",
-    "translation": "Sghyls"
   }
 }
