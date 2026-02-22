@@ -1,282 +1,350 @@
-# 📄 README.md
+# 📄 Localization App
 
-```markdown
-# Mini Localization Demo (AI-Assisted Localization PoC)
+AI-powered localization pipeline with multi-agent architecture for translating English UI strings to Hindi.
 
 ## 🎯 Purpose
 
-This is a minimal desktop application built using **PySide6 (Qt for Python)** to demonstrate:
-
-- UI string externalization
-- Runtime language switching
-- JSON-based localization
-- CI/CD-driven translation updates
-- AI-assisted localization workflows
-
-This project intentionally avoids Qt `.ts` files and uses a pure JSON-based translation system.
-
-It is designed as a Proof of Concept for demonstrating modern localization pipelines.
+This application demonstrates:
+- **Agent-based translation pipeline** with generation, evaluation, improvement, and validation
+- **Multi-file support** for multiple `en*.json` source files
+- **Persistent translation cache** for deterministic reuse across CI runs
+- **Confidence and quality gating** with retry logic
+- **Pure Hindi policy enforcement** to avoid transliterations
+- **CI/CD integration** via GitHub Actions
+- **Runtime language switching** in PySide6 desktop app
 
 ---
 
-## 🏗 Architecture Overview
+## 🏗 Architecture
 
-The application follows a strict localization-first architecture:
+### Agent-Based Pipeline
 
-- ❌ No hardcoded UI strings
-- ❌ No embedded English text in widgets
-- ❌ No Qt translation files (.ts)
-- ✅ All UI text comes from JSON files
-- ✅ Language switching at runtime
-- ✅ No app restart required
+The translation pipeline uses a lightweight multi-agent architecture:
 
-Localization files are the single source of truth.
+1. **ChangeDetectorAgent** - Detects new/changed strings in `en*.json` files
+2. **TranslationAgent** - Translates with retry-once logic and confidence normalization
+3. **ReflectionAgent** - Evaluates translation quality via `/evaluate` endpoint
+4. **ImprovementAgent** - Self-improves translations that pass confidence but fail quality
+5. **ValidationAgent** - Enforces confidence (≥0.95) and quality (≥0.90) thresholds
+6. **ReportAgent** - Generates QA reports and metrics
+
+### Pipeline Flow
+
+```
+en*.json files
+    ↓
+ChangeDetectorAgent (detect changes)
+    ↓
+TranslationAgent (translate with cache lookup)
+    ↓
+ReflectionAgent (evaluate quality)
+    ↓
+ImprovementAgent (improve if needed, enforce pure Hindi)
+    ↓
+ValidationAgent (gate by thresholds)
+    ↓
+ReportAgent (generate QA report)
+    ↓
+hi*.json files + qa_report.json
+```
 
 ---
 
 ## 📁 Project Structure
 
 ```
-
-mini_localization_app/
+loc_app/
 │
-├── main.py
+├── main.py                          # Application entry point
 │
 ├── ui/
-│   └── main_window.py
+│   ├── main_window.py               # PySide6 main window
+│   └── localization/
+│       ├── en.json                  # English source strings
+│       ├── en1.json                 # Additional English sources
+│       ├── hi.json                  # Hindi translations
+│       ├── hi1.json                 # Additional Hindi translations
+│       ├── qa_report.json           # QA metrics report
+│       └── string_loader.py         # Runtime string loader
+│
+├── scripts/
+│   └── generate_hi.py              # Agent-based translation pipeline
 │
 ├── localization/
-│   ├── en.json
-│   ├── hi.json
-│   └── string_loader.py
+│   └── translation_cache.json      # Persistent translation cache
 │
+├── .github/
+│   └── workflows/
+│       └── localization.yml        # CI/CD pipeline
+│
+├── requirements.txt
+├── .gitignore
 └── README.md
-
 ```
 
 ---
 
-## 🚀 How to Run
+## 🚀 Setup
 
-### 1️⃣ Create Virtual Environment (Optional but Recommended)
+### 1️⃣ Create Virtual Environment
 
-```
-
+```bash
 python -m venv venv
 venv\Scripts\activate    # Windows
-
+source venv/bin/activate # Linux/Mac
 ```
 
-### 2️⃣ Install Dependency
+### 2️⃣ Install Dependencies
 
+```bash
+pip install -r requirements.txt
 ```
 
-pip install PySide6
+Current dependencies:
+- `PySide6` - Qt for Python UI framework
+- `requests` - HTTP client for API calls
 
+### 3️⃣ Environment Variables (for CI/localization API)
+
+```bash
+# Localization API endpoint
+LOCALIZATION_API_URL=http://127.0.0.1:8000/translate
+
+# Confidence threshold (default: 0.95)
+CONFIDENCE_THRESHOLD=0.95
+
+# Quality threshold (default: 0.90)
+QUALITY_THRESHOLD=0.90
+
+# Gemini API key (for reflection/improvement)
+GEMINI_API_KEY=your_api_key_here
+
+# Gemini model (default: gemini-1.5-flash)
+GEMINI_REFLECTION_MODEL=gemini-1.5-flash
 ```
 
-### 3️⃣ Run Application
+### 4️⃣ Run Application
 
-From the project root:
-
-```
-
+```bash
 python main.py
+```
 
+---
+
+## 🔄 Translation Pipeline
+
+### Running the Pipeline
+
+```bash
+python scripts/generate_hi.py
+```
+
+### Features
+
+- **Multi-file support**: Automatically processes all `en*.json` files
+- **Incremental detection**: Only translates new or changed strings
+- **Translation cache**: Reuses validated translations across files and runs
+- **Confidence gating**: Requires ≥95% confidence (normalized from 0-100 scale)
+- **Quality gating**: Requires ≥90% quality score from reflection
+- **Retry logic**: One retry attempt if confidence below threshold
+- **Pure Hindi policy**: Rejects transliteration-based improvements
+- **QA reporting**: Generates `qa_report.json` with metrics
+
+### Cache Behavior
+
+- Cache is bootstrapped from existing `hi*.json` files at startup
+- Validated translations (passing both thresholds) are stored in cache
+- Cache persists across CI runs via `localization/translation_cache.json`
+- Same source text across multiple files reuses cached translation
+
+### Example Output
+
+```
+[ORCHESTRATOR] Processing file: en.json
+[CACHE] Reusing cached translation for key: btn_submit
+[TRANSLATOR] Translating key: btn_new
+[TRANSLATOR] Raw confidence: 98
+[TRANSLATOR] Normalized confidence: 0.98
+[REFLECTION] Quality score: 0.94
+[VALIDATOR] Key btn_new passed.
+[ORCHESTRATOR] Saved file: ui/localization/hi.json
 ```
 
 ---
 
 ## 🌍 Runtime Language Switching
 
-From the menu:
+From the application menu:
 
 ```
-
 Settings → Switch to English
 Settings → Switch to Hindi
-
-````
-
-The application will:
-
-1. Load the selected JSON file
-2. Reload all visible UI text
-3. Update the interface immediately
-4. Continue running without restart
-
----
-
-## 🔎 How the Localization System Works
-
-### 1. Language Loading
-
-`string_loader.py`:
-
-```python
-load_language(lang_code)
-````
-
-Loads the corresponding JSON file into memory.
-
----
-
-### 2. String Access
-
-UI components retrieve strings using:
-
-```python
-get_string("key_name")
 ```
 
-This ensures:
-
-* No string is hardcoded
-* JSON remains the only translation source
+The application:
+1. Loads the selected JSON file
+2. Reloads all visible UI text
+3. Updates the interface immediately
+4. Continues running without restart
 
 ---
 
-### 3. UI Retranslation
+## 🔁 CI/CD Integration
 
-The `MainWindow` contains:
+### GitHub Actions Workflow
 
-```python
-retranslate_ui()
+The `.github/workflows/localization.yml` workflow:
+
+1. **Triggers** on changes to:
+   - `ui/localization/en.json`
+   - `scripts/**`
+   - `.github/workflows/localization.yml`
+
+2. **Steps**:
+   - Clones localization API repository
+   - Starts localization API server
+   - Runs translation pipeline
+   - Generates QA report
+   - Commits updated `hi*.json` files and `qa_report.json`
+
+3. **Artifacts**:
+   - Uploads `qa_report.json` as artifact
+
+### QA Report Structure
+
+```json
+{
+  "threshold": 0.95,
+  "quality_threshold": 0.90,
+  "processed_files": ["en.json", "en1.json"],
+  "cache_hits": 5,
+  "cache_misses": 2,
+  "total_api_calls": 2,
+  "average_confidence": 0.97,
+  "average_quality_score": 0.94,
+  "status": "PASSED"
+}
 ```
 
-When language changes:
+---
 
-* JSON is reloaded
-* All widgets are updated
-* Dropdown values are refreshed
-* Menu items are updated
-* Status bar is refreshed
+## 🎯 Key Features
 
-This is critical for runtime switching.
+### Multi-File Support
+
+- Automatically discovers all `en*.json` files
+- Maps each to corresponding `hi*.json` file
+- Processes files in deterministic sorted order
+- Aggregates metrics across all files
+
+### Translation Cache
+
+- Persistent cache across CI runs
+- Bootstrapped from existing `hi*.json` files
+- Only stores validated translations (pass both thresholds)
+- Shared across all source files
+
+### Quality Assurance
+
+- **Confidence threshold**: 0.95 (normalized from 0-100)
+- **Quality threshold**: 0.90 (from reflection evaluation)
+- **Retry logic**: One retry if confidence below threshold
+- **Pure Hindi policy**: Rejects transliterations like "सबमिट"
+
+### Agent Architecture
+
+- Clean separation of concerns
+- Each agent has single responsibility
+- Pipeline orchestration via `LocalizationOrchestrator`
+- Easy to extend with new agents
 
 ---
 
-## 🧠 Why This Is Ideal for AI-Assisted Localization
+## 📊 Metrics Tracked
 
-Because:
-
-* Translations live entirely in JSON
-* No compiled translation files
-* No Qt tooling required
-* No code modifications needed when translations change
-
-An AI pipeline can:
-
-1. Detect new keys in `en.json`
-2. Generate translations
-3. Update `hi.json`
-4. Commit changes via CI
-5. App reflects updates automatically
-
-Zero developer intervention required.
+- Total API calls
+- Cache hits/misses
+- Retries performed
+- Reflection calls
+- Improvement attempts
+- Average confidence (accepted translations only)
+- Average quality score
+- Low confidence items count
 
 ---
 
-## 🔁 CI/CD Integration Model
+## 🔐 CI-Friendly Design
 
-In a production setup:
-
-1. Developers update `en.json`
-2. CI pipeline detects changes
-3. AI translation job generates updated `hi.json`
-4. PR is created automatically
-5. Once merged — app uses new translations instantly
-
-Because the app loads JSON at runtime, rebuilding the application is not required.
+- JSON = Single Source of Truth
+- No compiled translation files
+- Runtime reload support
+- UTF-8 encoding for multilingual support
+- Safe fallback if key missing
+- Deterministic processing order
+- Cache for reproducibility
 
 ---
 
-## ➕ Adding a New Language
+## ➕ Adding New Source Files
 
-To add French:
+Simply create a new `en*.json` file:
 
-### 1️⃣ Create new file
-
-```
-localization/fr.json
-```
-
-Copy structure from `en.json`.
-
-### 2️⃣ Add translations
-
-Translate all values.
-
-### 3️⃣ Add language switch action in UI
-
-Connect:
-
-```python
-self.action_switch_fr.triggered.connect(lambda: self.switch_language("fr"))
+```bash
+# Create en_settings.json
+cp ui/localization/en.json ui/localization/en_settings.json
 ```
 
-No other changes required.
+The pipeline will automatically:
+1. Detect the new file
+2. Process it through the translation pipeline
+3. Generate `hi_settings.json`
+4. Include it in the QA report
 
 ---
 
-## 🔐 CI-Friendly Design Principles
+## 🧪 Development
 
-* JSON = Single Source of Truth
-* UI separated from translation logic
-* No embedded strings
-* Runtime reload support
-* UTF-8 encoding for multilingual support
-* Safe fallback if key missing
+### Running Locally
 
----
+1. Start localization API server (separate repository)
+2. Set environment variables
+3. Run `python scripts/generate_hi.py`
+4. Check generated `hi*.json` files and `qa_report.json`
 
-## 📌 Key Localization Concepts Demonstrated
+### Testing
 
-✔ String externalization
-✔ Runtime language switching
-✔ UI retranslation
-✔ Separation of concerns
-✔ JSON-based localization
-✔ CI-driven translation injection
-✔ AI-ready translation pipeline
+- Modify `en.json` or add `en*.json` files
+- Run pipeline
+- Verify cache reuse for duplicate strings
+- Check QA report for metrics
 
 ---
 
-## 🧪 What This App Is NOT
+## 📌 Key Concepts
 
-* Not a production-grade i18n framework
-* Not using Qt Linguist
-* Not feature-heavy
-* Not using .ts/.qm files
-* Not performing real backend operations
-
-This is intentionally minimal for clarity and demonstration.
-
----
-
-## 🏁 Conclusion
-
-This application serves as a clean demonstration of how modern AI-driven localization can be:
-
-* Automated
-* CI-integrated
-* JSON-based
-* Runtime-switchable
-* Cleanly architected
-
-It provides a foundation that can scale into:
-
-* Enterprise localization systems
-* Cloud-based translation workflows
-* LLM-powered translation pipelines
-* Continuous localization environments
+✔ Agent-based architecture  
+✔ Multi-file translation support  
+✔ Persistent translation cache  
+✔ Confidence and quality gating  
+✔ Pure Hindi policy enforcement  
+✔ Incremental change detection  
+✔ Retry logic with single attempt  
+✔ QA reporting and metrics  
+✔ CI/CD integration  
+✔ Runtime language switching  
 
 ---
 
-## 👨‍💻 Built For
+## 🏁 Built For
 
-AI-assisted localization Proof of Concept
-CI/CD-integrated translation workflows
-Demonstrating modern i18n architecture patterns
+- AI-assisted localization workflows
+- CI/CD-integrated translation pipelines
+- Multi-file localization management
+- Quality-assured translation generation
+- Deterministic translation reuse
 
 ---
+
+## 📝 License
+
+[Add your license here]
