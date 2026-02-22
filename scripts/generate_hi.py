@@ -20,6 +20,7 @@ EN_PATH = "ui/localization/en.json"
 HI_PATH = "ui/localization/hi.json"
 QA_REPORT_DIR = "localization"
 QA_REPORT_PATH = "localization/qa_report.json"
+CACHE_PATH = "localization/translation_cache.json"
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.95"))
 QUALITY_THRESHOLD = float(os.getenv("QUALITY_THRESHOLD", "0.90"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -31,6 +32,18 @@ def load_json_safe(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+
+def load_translation_cache():
+    """Load persistent translation cache. Returns empty dict if file doesn't exist."""
+    return load_json_safe(CACHE_PATH)
+
+
+def save_translation_cache(cache):
+    """Save translation cache to disk."""
+    os.makedirs(QA_REPORT_DIR, exist_ok=True)
+    with open(CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
 def _translate_api(text):
@@ -165,8 +178,9 @@ class ChangeDetectorAgent:
 class TranslationAgent:
     """Translates changed strings with retry-once logic. Tracks API calls and confidence."""
 
-    def __init__(self, threshold=CONFIDENCE_THRESHOLD):
+    def __init__(self, threshold=CONFIDENCE_THRESHOLD, translation_cache=None):
         self.threshold = threshold
+        self.translation_cache = translation_cache or {}
 
     def _translate_one(self, key, source_text):
         """One key: translate with at most one retry. Returns (entry, confidence, below_threshold, api_calls, retried)."""
@@ -211,26 +225,51 @@ class TranslationAgent:
         retries_performed = 0
         accepted_confidences = []
         low_confidence_items = []
+        cache_hits = 0
+        cache_misses = 0
 
         for key, source_text in changes.items():
-            entry, confidence, below_threshold, api_calls, retried = self._translate_one(key, source_text)
-            translations[key] = {
-                "entry": entry,
-                "confidence": confidence,
-                "below_threshold": below_threshold,
-            }
-            total_api_calls += api_calls
-            if retried:
-                retries_performed += 1
-            if not below_threshold:
-                accepted_confidences.append(confidence)
-            if below_threshold:
-                low_confidence_items.append({
-                    "key": key,
-                    "source": source_text,
-                    "translation": entry["translation"],
+            # Check cache first
+            if source_text in self.translation_cache:
+                cached = self.translation_cache[source_text]
+                print(f"[CACHE] Reusing cached translation for key: {key}")
+                entry = {"source": source_text, "translation": cached["translation"]}
+                confidence = cached["confidence"]
+                quality_score = cached.get("quality_score", 1.0)
+                translations[key] = {
+                    "entry": entry,
                     "confidence": confidence,
-                })
+                    "below_threshold": False,
+                    "quality_score": quality_score,
+                    "issues": "",
+                    "suggested_improvement": "",
+                    "from_cache": True,
+                }
+                cache_hits += 1
+                if confidence >= self.threshold:
+                    accepted_confidences.append(confidence)
+            else:
+                # Normal translation path
+                entry, confidence, below_threshold, api_calls, retried = self._translate_one(key, source_text)
+                translations[key] = {
+                    "entry": entry,
+                    "confidence": confidence,
+                    "below_threshold": below_threshold,
+                    "from_cache": False,
+                }
+                total_api_calls += api_calls
+                if retried:
+                    retries_performed += 1
+                if not below_threshold:
+                    accepted_confidences.append(confidence)
+                if below_threshold:
+                    low_confidence_items.append({
+                        "key": key,
+                        "source": source_text,
+                        "translation": entry["translation"],
+                        "confidence": confidence,
+                    })
+                cache_misses += 1
 
         return {
             "translations": translations,
@@ -239,6 +278,8 @@ class TranslationAgent:
                 "retries_performed": retries_performed,
                 "accepted_confidences": accepted_confidences,
                 "low_confidence_items": low_confidence_items,
+                "cache_hits": cache_hits,
+                "cache_misses": cache_misses,
             },
         }
 
@@ -322,7 +363,7 @@ class ReflectionAgent:
         }
 
     def evaluate(self, translation_result):
-        """Run reflection on each newly translated key. Enrich and return result + total_reflection_calls."""
+        """Run reflection on each newly translated key. Skip cached items. Enrich and return result + total_reflection_calls."""
         translations = translation_result["translations"]
         trans_stats = translation_result["stats"]
         total_reflection_calls = 0
@@ -332,6 +373,19 @@ class ReflectionAgent:
             entry = data["entry"]
             source_text = entry["source"]
             translated_text = entry["translation"]
+
+            # Skip reflection for cached items (already have quality_score)
+            if data.get("from_cache"):
+                enriched[key] = {
+                    "entry": entry,
+                    "confidence": data["confidence"],
+                    "below_threshold": data["below_threshold"],
+                    "quality_score": data.get("quality_score", 1.0),
+                    "issues": data.get("issues", ""),
+                    "suggested_improvement": data.get("suggested_improvement", ""),
+                    "from_cache": True,
+                }
+                continue
 
             print(f"[REFLECTION] Evaluating key: {key}")
             reflection = self._evaluate_one(key, source_text, translated_text)
@@ -347,6 +401,7 @@ class ReflectionAgent:
                 "quality_score": quality_score,
                 "issues": reflection["issues"],
                 "suggested_improvement": reflection["suggested_improvement"],
+                "from_cache": False,
             }
 
         return {
@@ -422,6 +477,11 @@ class ImprovementAgent:
         result_translations = {}
 
         for key, data in translations.items():
+            # Skip cached items (already validated and passed)
+            if data.get("from_cache"):
+                result_translations[key] = data
+                continue
+
             confidence = data["confidence"]
             quality_score = data.get("quality_score", 0.0)
             entry = data["entry"]
@@ -479,9 +539,10 @@ class ImprovementAgent:
 class ValidationAgent:
     """Evaluates translation results against confidence and quality thresholds. Does not re-translate."""
 
-    def __init__(self, confidence_threshold=CONFIDENCE_THRESHOLD, quality_threshold=QUALITY_THRESHOLD):
+    def __init__(self, confidence_threshold=CONFIDENCE_THRESHOLD, quality_threshold=QUALITY_THRESHOLD, translation_cache=None):
         self.confidence_threshold = confidence_threshold
         self.quality_threshold = quality_threshold
+        self.translation_cache = translation_cache or {}
 
     def validate(self, improvement_result):
         translations = improvement_result["translations"]
@@ -520,6 +581,13 @@ class ValidationAgent:
             else:
                 accepted_confidences.append(confidence)
                 print(f"[VALIDATOR] Key {key} passed.")
+                # Store validated translation in cache
+                if not data.get("from_cache"):
+                    self.translation_cache[source] = {
+                        "translation": translation,
+                        "confidence": confidence,
+                        "quality_score": quality_score,
+                    }
 
         # Compute averages AFTER processing all keys
         average_confidence = (sum(accepted_confidences) / len(accepted_confidences)) if accepted_confidences else 0.0
@@ -541,6 +609,8 @@ class ValidationAgent:
                 "low_confidence_items": low_confidence_items,
                 "total_reflection_calls": stats.get("total_reflection_calls", 0),
                 "total_improvement_attempts": stats.get("total_improvement_attempts", 0),
+                "cache_hits": stats.get("cache_hits", 0),
+                "cache_misses": stats.get("cache_misses", 0),
             },
         }
 
@@ -580,6 +650,8 @@ class ReportAgent:
             "total_strings_in_source": det_stats["total_strings_in_source"],
             "strings_reused": det_stats["strings_reused"],
             "new_or_changed_strings": det_stats["new_or_changed_strings"],
+            "cache_hits": metrics.get("cache_hits", 0),
+            "cache_misses": metrics.get("cache_misses", 0),
             "total_api_calls": impr_stats["total_api_calls"],
             "retries_performed": impr_stats["retries_performed"],
             "total_reflection_calls": metrics.get("total_reflection_calls", 0),
@@ -603,6 +675,8 @@ class ReportAgent:
         print("----------------------------------------")
         print(f"Threshold: {CONFIDENCE_THRESHOLD}")
         print(f"Quality Threshold: {QUALITY_THRESHOLD}")
+        print(f"Cache Hits: {metrics.get('cache_hits', 0)}")
+        print(f"Cache Misses: {metrics.get('cache_misses', 0)}")
         print(f"Average Confidence: {metrics['average_confidence']:.2f}")
         print(f"Average Quality Score: {metrics.get('average_quality_score', 0):.2f}")
         print(f"API Calls: {impr_stats['total_api_calls']}")
@@ -621,11 +695,12 @@ class LocalizationOrchestrator:
     """Runs the pipeline: detect -> translate -> reflection -> improvement -> validate -> report -> merge & write -> exit."""
 
     def __init__(self):
+        self.translation_cache = load_translation_cache()
         self.detector = ChangeDetectorAgent()
-        self.translator = TranslationAgent()
+        self.translator = TranslationAgent(translation_cache=self.translation_cache)
         self.reflection = ReflectionAgent()
         self.improvement = ImprovementAgent(reflection_agent=self.reflection)
-        self.validator = ValidationAgent()
+        self.validator = ValidationAgent(translation_cache=self.translation_cache)
         self.reporter = ReportAgent()
 
     def run(self):
@@ -666,6 +741,10 @@ class LocalizationOrchestrator:
 
         print("\n[ORCHESTRATOR] All translations meet 95% confidence threshold.")
         print("[ORCHESTRATOR] Localization complete.")
+        
+        # Save updated cache
+        save_translation_cache(self.translation_cache)
+        print(f"[ORCHESTRATOR] Translation cache saved to {CACHE_PATH}")
 
 
 # ---------------------------------------------------------------------------
