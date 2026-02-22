@@ -96,7 +96,7 @@
     "translation": "यह एक लोकलाइज़ेशन डेमो ऐप है।"
   },
   "btn_submit": {
-    "source": "Submit",
-    "translation": "जमा करें"
+    "source": "Did you Submit?",
+    "translation": "क्या आपने सबमिट कर दिया?"
   }
 }
