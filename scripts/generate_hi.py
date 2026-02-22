@@ -5,6 +5,7 @@ Preserves: incremental detection, retry logic, confidence gating, QA report.
 
 import json
 import os
+import re
 import sys
 import time
 
@@ -63,6 +64,51 @@ def _call_gemini(prompt):
     if not parts:
         raise Exception("Gemini API returned no parts")
     return (parts[0].get("text") or "").strip()
+
+
+def extract_json_from_text(text: str):
+    """
+    Extract and parse JSON from LLM response. Handles markdown fences, extra text, trailing commas.
+    Returns dict or None on failure.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    text = text.strip()
+
+    # If ```json or ``` fenced block present, extract content inside
+    if "```" in text:
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+        if match:
+            text = match.group(1).strip()
+
+    # Otherwise or to normalize: first "{" to last "}"
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        text = text[start : end + 1]
+
+    def try_parse(s):
+        try:
+            return json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+    parsed = try_parse(text)
+    if parsed is not None:
+        return parsed
+
+    # Clean and retry: trailing commas, strip backticks/code markers
+    cleaned = text.strip()
+    cleaned = re.sub(r",\s*}", "}", cleaned)
+    cleaned = re.sub(r",\s*]", "]", cleaned)
+    cleaned = cleaned.strip().strip("`").strip()
+    if cleaned.lower().startswith("json"):
+        cleaned = cleaned[4:].lstrip()
+    parsed = try_parse(cleaned)
+    if parsed is not None:
+        return parsed
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -211,33 +257,41 @@ class ReflectionAgent:
         self.api_key = api_key or GEMINI_API_KEY
 
     def _evaluate_one(self, key, source_text, translated_text):
-        """Call Gemini and parse JSON. On failure return quality_score=0.0, issues='Invalid reflection response'."""
+        """Call Gemini and parse JSON. On parse failure use quality_score=0.5 to avoid false build failures."""
         prompt = REFLECTION_PROMPT_TEMPLATE.format(
             source_text=source_text.replace('"', '\\"'),
             translated_text=translated_text.replace('"', '\\"'),
         )
         try:
-            text = _call_gemini(prompt)
-            # Extract JSON from response (handle markdown code blocks)
-            if "```" in text:
-                start = text.find("{")
-                end = text.rfind("}") + 1
-                if start >= 0 and end > start:
-                    text = text[start:end]
-            data = json.loads(text)
-            quality_score = float(data.get("quality_score", 0.0))
-            quality_score = max(0.0, min(1.0, quality_score))
+            response_text = _call_gemini(prompt)
+        except Exception:
             return {
-                "quality_score": quality_score,
-                "issues": str(data.get("issues", "") or ""),
-                "suggested_improvement": str(data.get("suggested_improvement", "") or ""),
-            }
-        except (json.JSONDecodeError, ValueError, Exception):
-            return {
-                "quality_score": 0.0,
-                "issues": "Invalid reflection response",
+                "quality_score": 0.5,
+                "issues": "Reflection parsing failed",
                 "suggested_improvement": "",
             }
+
+        parsed = extract_json_from_text(response_text)
+        if parsed is None:
+            truncated = (response_text[:300] + "...") if len(response_text) > 300 else response_text
+            print(f"[REFLECTION] Failed to parse reflection JSON. Raw response logged.")
+            print(f"[REFLECTION] Raw (truncated 300): {truncated}")
+            return {
+                "quality_score": 0.5,
+                "issues": "Reflection parsing failed",
+                "suggested_improvement": "",
+            }
+
+        try:
+            quality_score = float(parsed.get("quality_score", 0.0))
+            quality_score = max(0.0, min(1.0, quality_score))
+        except (TypeError, ValueError):
+            quality_score = 0.5
+        return {
+            "quality_score": quality_score,
+            "issues": str(parsed.get("issues", "") or ""),
+            "suggested_improvement": str(parsed.get("suggested_improvement", "") or ""),
+        }
 
     def evaluate(self, translation_result):
         """Run reflection on each newly translated key. Enrich and return result + total_reflection_calls."""
