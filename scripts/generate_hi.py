@@ -69,10 +69,10 @@ def _call_gemini(prompt):
 def extract_json_from_text(text: str):
     """
     Extract and parse JSON from LLM response. Handles markdown fences, extra text, trailing commas.
-    Returns dict or None on failure.
+    Returns (dict or None, extracted_substring) for debugging.
     """
     if not text or not isinstance(text, str):
-        return None
+        return None, ""
     text = text.strip()
 
     # If ```json or ``` fenced block present, extract content inside
@@ -86,6 +86,7 @@ def extract_json_from_text(text: str):
     end = text.rfind("}")
     if start >= 0 and end > start:
         text = text[start : end + 1]
+    extracted_substring = text
 
     def try_parse(s):
         try:
@@ -95,7 +96,7 @@ def extract_json_from_text(text: str):
 
     parsed = try_parse(text)
     if parsed is not None:
-        return parsed
+        return parsed, extracted_substring
 
     # Clean and retry: trailing commas, strip backticks/code markers
     cleaned = text.strip()
@@ -106,9 +107,9 @@ def extract_json_from_text(text: str):
         cleaned = cleaned[4:].lstrip()
     parsed = try_parse(cleaned)
     if parsed is not None:
-        return parsed
+        return parsed, extracted_substring
 
-    return None
+    return None, extracted_substring
 
 
 # ---------------------------------------------------------------------------
@@ -271,8 +272,15 @@ class ReflectionAgent:
                 "suggested_improvement": "",
             }
 
-        parsed = extract_json_from_text(response_text)
+        print("[REFLECTION] Raw response (truncated):")
+        print(response_text[:500])
+
+        parsed, extracted_substring = extract_json_from_text(response_text)
+        print("[REFLECTION] Extracted JSON substring:")
+        print(extracted_substring)
+
         if parsed is None:
+            print("[REFLECTION] JSON parsing failed.")
             truncated = (response_text[:300] + "...") if len(response_text) > 300 else response_text
             print(f"[REFLECTION] Failed to parse reflection JSON. Raw response logged.")
             print(f"[REFLECTION] Raw (truncated 300): {truncated}")
