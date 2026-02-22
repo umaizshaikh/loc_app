@@ -124,6 +124,275 @@ def append_metrics_history(metrics_entry):
     print("[METRICS] Appended run to metrics_history.json")
 
 
+def _embed_json(data):
+    """Return JSON string safe for embedding in HTML <script> (avoids </script> break-out)."""
+    s = json.dumps(data, ensure_ascii=False)
+    return s.replace("</", "<\\/")
+
+
+def generate_static_dashboards(translation_cache):
+    """
+    Generate self-contained dashboard HTML files with embedded JSON.
+    No fetch() - works via file:// directly.
+    """
+    metrics_history_data = load_json_safe(METRICS_HISTORY_PATH)
+    metrics_history = metrics_history_data if isinstance(metrics_history_data, list) else []
+
+    glossary = load_json_safe(GLOSSARY_PATH)
+    if not isinstance(glossary, dict):
+        glossary = {}
+
+    qa_report = load_json_safe(QA_REPORT_PATH)
+    if not isinstance(qa_report, dict):
+        qa_report = {}
+
+    cache = translation_cache if isinstance(translation_cache, dict) else {}
+
+    os.makedirs("dashboard", exist_ok=True)
+
+    # metrics_static.html
+    metrics_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Localization QA Metrics</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {{ font-family: system-ui, sans-serif; margin: 1rem; max-width: 900px; }}
+    h1 {{ font-size: 1.25rem; }}
+    .summary {{ background: #f5f5f5; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; }}
+    .summary dl {{ margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }}
+    .summary dt {{ font-weight: 600; }}
+    .chart-wrap {{ margin-bottom: 2rem; }}
+    .chart-wrap h2 {{ font-size: 1rem; margin-bottom: 0.5rem; }}
+    .chart-container {{ position: relative; height: 220px; }}
+    a {{ color: #0066cc; }}
+  </style>
+</head>
+<body>
+  <h1>Localization QA Metrics</h1>
+  <div class="summary" id="summary"></div>
+  <div class="chart-wrap">
+    <h2>Average confidence over time</h2>
+    <div class="chart-container"><canvas id="chartConfidence"></canvas></div>
+  </div>
+  <div class="chart-wrap">
+    <h2>Average quality over time</h2>
+    <div class="chart-container"><canvas id="chartQuality"></canvas></div>
+  </div>
+  <div class="chart-wrap">
+    <h2>API calls vs Cache hits vs Glossary hits</h2>
+    <div class="chart-container"><canvas id="chartBar"></canvas></div>
+  </div>
+  <p><a href="index.html">← Dashboard index</a></p>
+
+  <script>
+const METRICS_HISTORY = {_embed_json(metrics_history)};
+
+function renderSummary(history) {{
+  const el = document.getElementById('summary');
+  if (!history || history.length === 0) {{
+    el.textContent = 'No runs recorded yet.';
+    return;
+  }}
+  const last = history[history.length - 1];
+  el.innerHTML = '<dl>' +
+    '<dt>Last run</dt><dd>' + last.timestamp + '</dd>' +
+    '<dt>Status</dt><dd>' + last.status + '</dd>' +
+    '<dt>Avg confidence</dt><dd>' + last.average_confidence + '</dd>' +
+    '<dt>Avg quality</dt><dd>' + last.average_quality + '</dd>' +
+    '<dt>API calls</dt><dd>' + last.api_calls + '</dd>' +
+    '<dt>Cache hits</dt><dd>' + last.cache_hits + '</dd>' +
+    '<dt>Glossary hits</dt><dd>' + last.glossary_hits + '</dd>' +
+    '<dt>Reflection calls</dt><dd>' + last.reflection_calls + '</dd>' +
+    '</dl>';
+}}
+
+function renderCharts(history) {{
+  if (!history || history.length === 0) return;
+  const labels = history.map(function(e) {{ return e.timestamp; }});
+  new Chart(document.getElementById('chartConfidence'), {{
+    type: 'line',
+    data: {{
+      labels: labels,
+      datasets: [{{ label: 'Average confidence', data: history.map(function(e) {{ return e.average_confidence; }}), borderColor: '#0066cc', tension: 0.2, fill: false }},
+    }},
+    options: {{ responsive: true, maintainAspectRatio: false, scales: {{ y: {{ min: 0, max: 1 }} }} }}
+  }});
+  new Chart(document.getElementById('chartQuality'), {{
+    type: 'line',
+    data: {{
+      labels: labels,
+      datasets: [{{ label: 'Average quality', data: history.map(function(e) {{ return e.average_quality; }}), borderColor: '#2e7d32', tension: 0.2, fill: false }},
+    }},
+    options: {{ responsive: true, maintainAspectRatio: false, scales: {{ y: {{ min: 0, max: 1 }} }} }}
+  }});
+  new Chart(document.getElementById('chartBar'), {{
+    type: 'bar',
+    data: {{
+      labels: history.map(function(_, i) {{ return 'Run ' + (i + 1); }}),
+      datasets: [
+        {{ label: 'API calls', data: history.map(function(e) {{ return e.api_calls; }}), backgroundColor: '#1976d2' }},
+        {{ label: 'Cache hits', data: history.map(function(e) {{ return e.cache_hits; }}), backgroundColor: '#388e3c' }},
+        {{ label: 'Glossary hits', data: history.map(function(e) {{ return e.glossary_hits; }}), backgroundColor: '#f57c00' }},
+      ],
+    }},
+    options: {{ responsive: true, maintainAspectRatio: false, scales: {{ x: {{ stacked: false }}, y: {{ beginAtZero: true }} }} }}
+  }});
+}}
+
+renderSummary(METRICS_HISTORY);
+renderCharts(METRICS_HISTORY);
+  </script>
+</body>
+</html>
+"""
+    with open("dashboard/metrics_static.html", "w", encoding="utf-8") as f:
+        f.write(metrics_html)
+
+    # admin_static.html
+    def _escape(s):
+        if s is None:
+            return ""
+        return (
+            str(s)
+            .replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("'", "&#39;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+    qa_status = qa_report.get("status", "—")
+    cache_size = len(cache) if isinstance(cache, dict) else 0
+    qa_api_calls = qa_report.get("total_api_calls", "—")
+    qa_confidence = qa_report.get("average_confidence", "—")
+    qa_quality = qa_report.get("average_quality_score", "—")
+    glossary_count = len(glossary)
+
+    admin_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Glossary Admin</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; margin: 1rem; max-width: 900px; }}
+    h1 {{ font-size: 1.25rem; }}
+    .stats {{ background: #f5f5f5; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; }}
+    .stats dl {{ margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }}
+    .stats dt {{ font-weight: 600; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 1rem 0; }}
+    th, td {{ border: 1px solid #ccc; padding: 0.35rem 0.5rem; text-align: left; }}
+    th {{ background: #eee; }}
+    input {{ width: 100%; box-sizing: border-box; }}
+    .actions {{ margin-top: 0.5rem; }}
+    button {{ margin-right: 0.5rem; padding: 0.4rem 0.75rem; cursor: pointer; }}
+    .del {{ background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }}
+    a {{ color: #0066cc; }}
+  </style>
+</head>
+<body>
+  <h1>Glossary Admin</h1>
+  <div class="stats">
+    <dl>
+      <dt>Glossary entries</dt><dd>{glossary_count}</dd>
+      <dt>Last run status</dt><dd>{_escape(qa_status)}</dd>
+      <dt>Translation cache size</dt><dd>{cache_size}</dd>
+      <dt>API calls (last run)</dt><dd>{qa_api_calls}</dd>
+      <dt>Avg confidence</dt><dd>{qa_confidence}</dd>
+      <dt>Avg quality</dt><dd>{qa_quality}</dd>
+    </dl>
+  </div>
+  <h2>Glossary</h2>
+  <table id="glossaryTable">
+    <thead><tr><th>Source term</th><th>Translation</th><th></th></tr></thead>
+    <tbody id="glossaryBody"></tbody>
+  </table>
+  <div class="actions">
+    <button type="button" id="addRow">Add term</button>
+    <button type="button" id="saveBtn">Save (download glossary.json)</button>
+  </div>
+  <p><a href="index.html">← Dashboard index</a></p>
+
+  <script>
+const GLOSSARY = {_embed_json(glossary)};
+const QA_REPORT = {_embed_json(qa_report)};
+const CACHE = {_embed_json(cache)};
+
+let glossaryData = Object.assign({{}}, GLOSSARY);
+
+function escapeAttr(s) {{
+  if (s == null) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, "&#39;").replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}}
+
+function renderTable() {{
+  const tbody = document.getElementById('glossaryBody');
+  tbody.innerHTML = '';
+  for (const key of Object.keys(glossaryData)) {{
+    const value = glossaryData[key] || '';
+    const tr = document.createElement('tr');
+    tr.dataset.key = key;
+    tr.innerHTML = '<td><input data-key type="text" value="' + escapeAttr(key) + '" placeholder="Source term"></td>' +
+      '<td><input data-value type="text" value="' + escapeAttr(value) + '" placeholder="Translation"></td>' +
+      '<td><button type="button" class="del" data-remove>Delete</button></td>';
+    tr.querySelector('[data-remove]').addEventListener('click', function() {{
+      delete glossaryData[tr.dataset.key];
+      renderTable();
+    }});
+    tr.querySelector('[data-key]').addEventListener('change', function(e) {{
+      const oldK = tr.dataset.key;
+      const newK = e.target.value.trim();
+      if (newK && newK !== oldK) {{
+        glossaryData[newK] = glossaryData[oldK];
+        delete glossaryData[oldK];
+        tr.dataset.key = newK;
+      }}
+    }});
+    tr.querySelector('[data-value]').addEventListener('input', function(e) {{
+      glossaryData[tr.dataset.key] = e.target.value;
+    }});
+    tbody.appendChild(tr);
+  }}
+}}
+
+document.getElementById('addRow').addEventListener('click', function() {{
+  glossaryData['New term'] = '';
+  renderTable();
+}});
+
+document.getElementById('saveBtn').addEventListener('click', function() {{
+  const rows = document.querySelectorAll('#glossaryBody tr');
+  const out = {{}};
+  rows.forEach(function(tr) {{
+    const k = tr.querySelector('[data-key]').value.trim();
+    const v = tr.querySelector('[data-value]').value;
+    if (k) out[k] = v;
+  }});
+  glossaryData = out;
+  const blob = new Blob([JSON.stringify(out, null, 2)], {{ type: 'application/json' }});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'glossary.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}});
+
+renderTable();
+  </script>
+</body>
+</html>
+"""
+    with open("dashboard/admin_static.html", "w", encoding="utf-8") as f:
+        f.write(admin_html)
+
+    print("[DASHBOARD] Generated metrics_static.html and admin_static.html")
+
+
 def contains_transliteration(text: str) -> bool:
     """
     Returns True if text likely contains English transliteration.
@@ -1035,6 +1304,8 @@ class LocalizationOrchestrator:
         }
         append_metrics_history(metrics_entry)
         print("[METRICS DEBUG]", metrics_entry)
+
+        generate_static_dashboards(self.translation_cache)
 
         if overall_status == "FAILED":
             low_confidence_items = all_validation_metrics["low_confidence_items"]

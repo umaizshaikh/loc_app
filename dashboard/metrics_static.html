@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Localization QA Metrics</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1rem; max-width: 900px; }
+    h1 { font-size: 1.25rem; }
+    .summary { background: #f5f5f5; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
+    .summary dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }
+    .summary dt { font-weight: 600; }
+    .chart-wrap { margin-bottom: 2rem; }
+    .chart-wrap h2 { font-size: 1rem; margin-bottom: 0.5rem; }
+    .chart-container { position: relative; height: 220px; }
+    a { color: #0066cc; }
+  </style>
+</head>
+<body>
+  <h1>Localization QA Metrics</h1>
+  <div class="summary" id="summary"></div>
+  <div class="chart-wrap">
+    <h2>Average confidence over time</h2>
+    <div class="chart-container"><canvas id="chartConfidence"></canvas></div>
+  </div>
+  <div class="chart-wrap">
+    <h2>Average quality over time</h2>
+    <div class="chart-container"><canvas id="chartQuality"></canvas></div>
+  </div>
+  <div class="chart-wrap">
+    <h2>API calls vs Cache hits vs Glossary hits</h2>
+    <div class="chart-container"><canvas id="chartBar"></canvas></div>
+  </div>
+  <p><a href="index.html">← Dashboard index</a></p>
+
+  <script>
+const METRICS_HISTORY = [{"timestamp": "2026-02-22T12:01:11Z", "status": "PASSED", "average_confidence": 0.0, "average_quality": 0.0, "api_calls": 0, "cache_hits": 0, "glossary_hits": 0, "reflection_calls": 0}, {"timestamp": "2026-02-22T12:06:56Z", "status": "PASSED", "average_confidence": 0.0, "average_quality": 0.0, "api_calls": 0, "cache_hits": 0, "glossary_hits": 0, "reflection_calls": 0}, {"timestamp": "2026-02-22T12:23:41.512304Z", "status": "PASSED", "average_confidence": 0.98, "average_quality": 0.98, "api_calls": 1, "cache_hits": 0, "glossary_hits": 0, "reflection_calls": 1}];
+
+function renderSummary(history) {
+  const el = document.getElementById('summary');
+  if (!history || history.length === 0) {
+    el.textContent = 'No runs recorded yet.';
+    return;
+  }
+  const last = history[history.length - 1];
+  el.innerHTML = '<dl>' +
+    '<dt>Last run</dt><dd>' + last.timestamp + '</dd>' +
+    '<dt>Status</dt><dd>' + last.status + '</dd>' +
+    '<dt>Avg confidence</dt><dd>' + last.average_confidence + '</dd>' +
+    '<dt>Avg quality</dt><dd>' + last.average_quality + '</dd>' +
+    '<dt>API calls</dt><dd>' + last.api_calls + '</dd>' +
+    '<dt>Cache hits</dt><dd>' + last.cache_hits + '</dd>' +
+    '<dt>Glossary hits</dt><dd>' + last.glossary_hits + '</dd>' +
+    '<dt>Reflection calls</dt><dd>' + last.reflection_calls + '</dd>' +
+    '</dl>';
+}
+
+function renderCharts(history) {
+  if (!history || history.length === 0) return;
+  const labels = history.map(function(e) { return e.timestamp; });
+  new Chart(document.getElementById('chartConfidence'), {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{ label: 'Average confidence', data: history.map(function(e) { return e.average_confidence; }), borderColor: '#0066cc', tension: 0.2, fill: false },
+    },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 1 } } }
+  });
+  new Chart(document.getElementById('chartQuality'), {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{ label: 'Average quality', data: history.map(function(e) { return e.average_quality; }), borderColor: '#2e7d32', tension: 0.2, fill: false },
+    },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 1 } } }
+  });
+  new Chart(document.getElementById('chartBar'), {
+    type: 'bar',
+    data: {
+      labels: history.map(function(_, i) { return 'Run ' + (i + 1); }),
+      datasets: [
+        { label: 'API calls', data: history.map(function(e) { return e.api_calls; }), backgroundColor: '#1976d2' },
+        { label: 'Cache hits', data: history.map(function(e) { return e.cache_hits; }), backgroundColor: '#388e3c' },
+        { label: 'Glossary hits', data: history.map(function(e) { return e.glossary_hits; }), backgroundColor: '#f57c00' },
+      ],
+    },
+    options: { responsive: true, maintainAspectRatio: false, scales: { x: { stacked: false }, y: { beginAtZero: true } } }
+  });
+}
+
+renderSummary(METRICS_HISTORY);
+renderCharts(METRICS_HISTORY);
+  </script>
+</body>
+</html>
