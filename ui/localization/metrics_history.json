@@ -68,5 +68,15 @@
     "cache_hits": 0,
     "glossary_hits": 0,
     "reflection_calls": 1
+  },
+  {
+    "timestamp": "2026-02-22T13:49:36.349498Z",
+    "status": "PASSED",
+    "average_confidence": 1.0,
+    "average_quality": 1.0,
+    "api_calls": 0,
+    "cache_hits": 0,
+    "glossary_hits": 1,
+    "reflection_calls": 0
   }
 ]
