@@ -26,9 +26,14 @@ def load_language(lang_code: str):
 def get_string(key: str) -> str:
     """
     Fetch string by key.
+    Handles both plain strings (en.json) and {source, translation} entries (hi.json).
     Fallback to key name if missing.
     """
-    return _current_strings.get(key, f"[{key}]")
+    value = _current_strings.get(key, f"[{key}]")
+    if isinstance(value, dict):
+        # hi.json format: {"source": "...", "translation": "..."}
+        return value.get("translation") or value.get("source") or f"[{key}]"
+    return str(value)
 
 
 def current_language():
