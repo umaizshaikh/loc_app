@@ -52,6 +52,13 @@ jobs:
         run: |
           python scripts/generate_hi.py
 
+      - name: Upload QA Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: localization-qa-report
+          path: localization/qa_report.json
+
       - name: Commit Updated hi.json
         run: |
           git config --global user.name "github-actions"
