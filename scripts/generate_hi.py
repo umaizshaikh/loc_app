@@ -897,9 +897,14 @@ class LocalizationOrchestrator:
             for key, data in improvement_result["translations"].items():
                 final_hi[key] = data["entry"]
 
+            # Ensure directory exists before writing
+            os.makedirs(LOCALIZATION_DIR, exist_ok=True)
+            
+            # Always save target file (even if all keys were reused)
             with open(target_file, "w", encoding="utf-8") as f:
                 json.dump(final_hi, f, ensure_ascii=False, indent=2)
-
+            
+            print(f"[ORCHESTRATOR] Saved file: {target_file}")
             print(f"[ORCHESTRATOR] Completed processing {source_basename}\n")
 
         # Compute final averages
