@@ -19,6 +19,7 @@ EVALUATE_URL = os.getenv("LOCALIZATION_API_URL", "http://127.0.0.1:8000").rstrip
 LOCALIZATION_DIR = "ui/localization"
 EN_PATH = "ui/localization/en.json"
 HI_PATH = "ui/localization/hi.json"
+GLOSSARY_PATH = os.path.join("ui", "localization", "glossary.json")
 QA_REPORT_DIR = "ui/localization"
 QA_REPORT_PATH = "ui/localization/qa_report.json"
 CACHE_PATH = "localization/translation_cache.json"
@@ -92,6 +93,11 @@ def bootstrap_cache_from_existing_files(translation_cache):
 def load_translation_cache():
     """Load persistent translation cache. Returns empty dict if file doesn't exist."""
     return load_json_safe(CACHE_PATH)
+
+
+def load_glossary():
+    """Load glossary overrides. Returns empty dict if file doesn't exist."""
+    return load_json_safe(GLOSSARY_PATH)
 
 
 def save_translation_cache(cache):
@@ -261,9 +267,10 @@ class ChangeDetectorAgent:
 class TranslationAgent:
     """Translates changed strings with retry-once logic. Tracks API calls and confidence."""
 
-    def __init__(self, threshold=CONFIDENCE_THRESHOLD, translation_cache=None):
+    def __init__(self, threshold=CONFIDENCE_THRESHOLD, translation_cache=None, glossary=None):
         self.threshold = threshold
         self.translation_cache = translation_cache or {}
+        self.glossary = glossary or {}
 
     def _translate_one(self, key, source_text):
         """One key: translate with at most one retry. Returns (entry, confidence, below_threshold, api_calls, retried)."""
@@ -310,13 +317,44 @@ class TranslationAgent:
         low_confidence_items = []
         cache_hits = 0
         cache_misses = 0
+        glossary_hits = 0
 
         for key, source_text in changes.items():
-            # Check cache first
-            if source_text in self.translation_cache:
-                cached = self.translation_cache[source_text]
+            source_text_clean = source_text.strip()
+
+            # Glossary check FIRST (before cache)
+            if source_text_clean in self.glossary:
+                glossary_translation = self.glossary[source_text_clean]
+                if not isinstance(glossary_translation, str):
+                    glossary_translation = str(glossary_translation or "").strip()
+                if glossary_translation:
+                    print(f"[GLOSSARY] Override applied for key: {key}")
+                    entry = {"source": source_text_clean, "translation": glossary_translation}
+                    translations[key] = {
+                        "entry": entry,
+                        "confidence": 1.0,
+                        "below_threshold": False,
+                        "quality_score": 1.0,
+                        "issues": "",
+                        "suggested_improvement": "",
+                        "from_cache": False,
+                        "from_glossary": True,
+                    }
+                    self.translation_cache[source_text_clean] = {
+                        "translation": glossary_translation,
+                        "confidence": 1.0,
+                        "quality_score": 1.0,
+                    }
+                    glossary_hits += 1
+                    accepted_confidences.append(1.0)
+                    continue
+                print(f"[GLOSSARY] No override for key: {key} (empty translation)")
+
+            # Check cache (glossary has priority)
+            if source_text_clean in self.translation_cache:
+                cached = self.translation_cache[source_text_clean]
                 print(f"[CACHE] Reusing cached translation for key: {key}")
-                entry = {"source": source_text, "translation": cached["translation"]}
+                entry = {"source": source_text_clean, "translation": cached["translation"]}
                 confidence = cached["confidence"]
                 quality_score = cached.get("quality_score", 1.0)
                 translations[key] = {
@@ -327,6 +365,7 @@ class TranslationAgent:
                     "issues": "",
                     "suggested_improvement": "",
                     "from_cache": True,
+                    "from_glossary": False,
                 }
                 cache_hits += 1
                 if confidence >= self.threshold:
@@ -339,6 +378,7 @@ class TranslationAgent:
                     "confidence": confidence,
                     "below_threshold": below_threshold,
                     "from_cache": False,
+                    "from_glossary": False,
                 }
                 total_api_calls += api_calls
                 if retried:
@@ -363,6 +403,7 @@ class TranslationAgent:
                 "low_confidence_items": low_confidence_items,
                 "cache_hits": cache_hits,
                 "cache_misses": cache_misses,
+                "glossary_hits": glossary_hits,
             },
         }
 
@@ -457,8 +498,8 @@ class ReflectionAgent:
             source_text = entry["source"]
             translated_text = entry["translation"]
 
-            # Skip reflection for cached items (already have quality_score)
-            if data.get("from_cache"):
+            # Skip reflection for cached or glossary items (already have quality_score)
+            if data.get("from_cache") or data.get("from_glossary"):
                 enriched[key] = {
                     "entry": entry,
                     "confidence": data["confidence"],
@@ -467,6 +508,7 @@ class ReflectionAgent:
                     "issues": data.get("issues", ""),
                     "suggested_improvement": data.get("suggested_improvement", ""),
                     "from_cache": True,
+                    "from_glossary": data.get("from_glossary", False),
                 }
                 continue
 
@@ -485,6 +527,7 @@ class ReflectionAgent:
                 "issues": reflection["issues"],
                 "suggested_improvement": reflection["suggested_improvement"],
                 "from_cache": False,
+                "from_glossary": False,
             }
 
         return {
@@ -564,8 +607,8 @@ class ImprovementAgent:
         policy_logged = False
 
         for key, data in translations.items():
-            # Skip cached items (already validated and passed)
-            if data.get("from_cache"):
+            # Skip cached or glossary items (already validated and passed)
+            if data.get("from_cache") or data.get("from_glossary"):
                 result_translations[key] = data
                 continue
 
@@ -677,8 +720,8 @@ class ValidationAgent:
             else:
                 accepted_confidences.append(confidence)
                 print(f"[VALIDATOR] Key {key} passed.")
-                # Store validated translation in cache
-                if not data.get("from_cache"):
+                # Store validated translation in cache (glossary already stored by TranslationAgent)
+                if not data.get("from_cache") and not data.get("from_glossary"):
                     self.translation_cache[source] = {
                         "translation": translation,
                         "confidence": confidence,
@@ -707,6 +750,7 @@ class ValidationAgent:
                 "total_improvement_attempts": stats.get("total_improvement_attempts", 0),
                 "cache_hits": stats.get("cache_hits", 0),
                 "cache_misses": stats.get("cache_misses", 0),
+                "glossary_hits": stats.get("glossary_hits", 0),
             },
         }
 
@@ -748,6 +792,7 @@ class ReportAgent:
             "total_strings_in_source": det_stats["total_strings_in_source"],
             "strings_reused": det_stats["strings_reused"],
             "new_or_changed_strings": det_stats["new_or_changed_strings"],
+            "glossary_hits": metrics.get("glossary_hits", 0),
             "cache_hits": metrics.get("cache_hits", 0),
             "cache_misses": metrics.get("cache_misses", 0),
             "total_api_calls": impr_stats["total_api_calls"],
@@ -773,6 +818,7 @@ class ReportAgent:
         print("----------------------------------------")
         print(f"Threshold: {CONFIDENCE_THRESHOLD}")
         print(f"Quality Threshold: {QUALITY_THRESHOLD}")
+        print(f"Glossary Hits: {metrics.get('glossary_hits', 0)}")
         print(f"Cache Hits: {metrics.get('cache_hits', 0)}")
         print(f"Cache Misses: {metrics.get('cache_misses', 0)}")
         print(f"Average Confidence: {metrics['average_confidence']:.2f}")
@@ -794,8 +840,9 @@ class LocalizationOrchestrator:
 
     def __init__(self):
         self.translation_cache = load_translation_cache()
+        self.glossary = load_glossary()
         self.detector = ChangeDetectorAgent(en_path=EN_PATH, hi_path=HI_PATH)  # Defaults for backward compat
-        self.translator = TranslationAgent(translation_cache=self.translation_cache)
+        self.translator = TranslationAgent(translation_cache=self.translation_cache, glossary=self.glossary)
         self.reflection = ReflectionAgent()
         self.improvement = ImprovementAgent(reflection_agent=self.reflection)
         self.validator = ValidationAgent(translation_cache=self.translation_cache)
@@ -805,6 +852,9 @@ class LocalizationOrchestrator:
         start_time = time.time()
 
         print("\n[ORCHESTRATOR] Starting incremental localization with change detection...\n")
+
+        # Log glossary loaded
+        print(f"[GLOSSARY] Loaded entries: {len(self.glossary)}")
 
         # Bootstrap cache from existing hi*.json files
         entries_added = bootstrap_cache_from_existing_files(self.translation_cache)
@@ -829,6 +879,7 @@ class LocalizationOrchestrator:
             "retries_performed": 0,
             "cache_hits": 0,
             "cache_misses": 0,
+            "glossary_hits": 0,
         }
         all_reflection_stats = {"total_reflection_calls": 0}
         all_improvement_stats = {"total_improvement_attempts": 0}
@@ -841,6 +892,7 @@ class LocalizationOrchestrator:
             "total_improvement_attempts": 0,
             "cache_hits": 0,
             "cache_misses": 0,
+            "glossary_hits": 0,
         }
         processed_files = []
         all_confidences = []
@@ -875,6 +927,7 @@ class LocalizationOrchestrator:
             all_translation_stats["retries_performed"] += translation_result["stats"]["retries_performed"]
             all_translation_stats["cache_hits"] += translation_result["stats"].get("cache_hits", 0)
             all_translation_stats["cache_misses"] += translation_result["stats"].get("cache_misses", 0)
+            all_translation_stats["glossary_hits"] += translation_result["stats"].get("glossary_hits", 0)
             all_reflection_stats["total_reflection_calls"] += reflection_result["stats"].get("total_reflection_calls", 0)
             all_improvement_stats["total_improvement_attempts"] += improvement_result["stats"].get("total_improvement_attempts", 0)
             
@@ -918,6 +971,7 @@ class LocalizationOrchestrator:
         all_validation_metrics["total_improvement_attempts"] = all_improvement_stats["total_improvement_attempts"]
         all_validation_metrics["cache_hits"] = all_translation_stats["cache_hits"]
         all_validation_metrics["cache_misses"] = all_translation_stats["cache_misses"]
+        all_validation_metrics["glossary_hits"] = all_translation_stats["glossary_hits"]
 
         # Create aggregated results for reporting
         aggregated_detector_result = {"stats": all_detector_stats}
