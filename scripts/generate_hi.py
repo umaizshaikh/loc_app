@@ -46,7 +46,7 @@ def _translate_api(text):
 
 
 def _call_gemini(prompt):
-    """Call Gemini API for reflection. Returns raw text or raises."""
+    """Call Gemini API for reflection. Returns (response, data) for consistent extraction."""
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY is not set")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
@@ -57,12 +57,17 @@ def _call_gemini(prompt):
     if response.status_code != 200:
         raise Exception(f"Gemini API Error: {response.text}")
     data = response.json()
+    return response, data
+
+
+def _gemini_text_from_data(data):
+    """Extract LLM text from Gemini API response shape. Returns empty string if missing."""
     candidates = data.get("candidates") or []
     if not candidates:
-        raise Exception("Gemini API returned no candidates")
+        return ""
     parts = candidates[0].get("content", {}).get("parts") or []
     if not parts:
-        raise Exception("Gemini API returned no parts")
+        return ""
     return (parts[0].get("text") or "").strip()
 
 
@@ -258,13 +263,13 @@ class ReflectionAgent:
         self.api_key = api_key or GEMINI_API_KEY
 
     def _evaluate_one(self, key, source_text, translated_text):
-        """Call Gemini and parse JSON. On parse failure use quality_score=0.5 to avoid false build failures."""
+        """Call API and parse JSON. Extract LLM output from data['translation'] or data['response']. On parse failure use quality_score=0.5."""
         prompt = REFLECTION_PROMPT_TEMPLATE.format(
             source_text=source_text.replace('"', '\\"'),
             translated_text=translated_text.replace('"', '\\"'),
         )
         try:
-            response_text = _call_gemini(prompt)
+            response, data = _call_gemini(prompt)
         except Exception:
             return {
                 "quality_score": 0.5,
@@ -272,16 +277,22 @@ class ReflectionAgent:
                 "suggested_improvement": "",
             }
 
-        print("[REFLECTION] Raw response (truncated):")
-        print(response_text[:500])
+        # Same pattern as TranslationAgent: extract actual LLM string from API response
+        reflection_text = data.get("translation") or data.get("response")
+        if reflection_text is None or (isinstance(reflection_text, str) and not reflection_text.strip()):
+            reflection_text = _gemini_text_from_data(data)
+        reflection_text = (reflection_text or "").strip() if isinstance(reflection_text, str) else ""
 
-        parsed, extracted_substring = extract_json_from_text(response_text)
+        print("[REFLECTION] Raw LLM output:")
+        print(reflection_text[:500])
+
+        parsed, extracted_substring = extract_json_from_text(reflection_text)
         print("[REFLECTION] Extracted JSON substring:")
         print(extracted_substring)
 
         if parsed is None:
             print("[REFLECTION] JSON parsing failed.")
-            truncated = (response_text[:300] + "...") if len(response_text) > 300 else response_text
+            truncated = (reflection_text[:300] + "...") if len(reflection_text) > 300 else reflection_text
             print(f"[REFLECTION] Failed to parse reflection JSON. Raw response logged.")
             print(f"[REFLECTION] Raw (truncated 300): {truncated}")
             return {
@@ -380,14 +391,16 @@ class ImprovementAgent:
             issues_from_reflection=(issues or "").replace('"', '\\"'),
         )
         try:
-            text = _call_gemini(prompt)
+            _resp, data = _call_gemini(prompt)
+            text = data.get("translation") or data.get("response") or _gemini_text_from_data(data)
+            text = (text or "").strip() if isinstance(text, str) else ""
             if "```" in text:
                 start = text.find("{")
                 end = text.rfind("}") + 1
                 if start >= 0 and end > start:
                     text = text[start:end]
-            data = json.loads(text)
-            return (data.get("improved_translation") or "").strip() or None
+            parsed = json.loads(text)
+            return (parsed.get("improved_translation") or "").strip() or None
         except (json.JSONDecodeError, ValueError, Exception):
             return None
 
