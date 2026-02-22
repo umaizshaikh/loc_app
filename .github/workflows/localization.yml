@@ -35,17 +35,14 @@ jobs:
           pip install -r requirements.txt
           pip install google-generativeai python-dotenv
 
-      - name: Configure Gemini API Key
-        run: |
-          cd localization-api
-          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
-
       - name: Initialize Translation Memory
         run: |
           cd localization-api
           python database/vector_store.py
 
       - name: Start Localization API
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           cd localization-api
           uvicorn api.main:app --port 8000 &
