@@ -15,6 +15,7 @@ import requests
 # Configuration (only global state)
 # ---------------------------------------------------------------------------
 API_URL = os.getenv("LOCALIZATION_API_URL", "http://127.0.0.1:8000/translate")
+EVALUATE_URL = os.getenv("LOCALIZATION_API_URL", "http://127.0.0.1:8000").rstrip("/") + "/evaluate"
 EN_PATH = "ui/localization/en.json"
 HI_PATH = "ui/localization/hi.json"
 QA_REPORT_DIR = "localization"
@@ -171,19 +172,29 @@ class TranslationAgent:
         """One key: translate with at most one retry. Returns (entry, confidence, below_threshold, api_calls, retried)."""
         result = _translate_api(source_text)
         api_calls = 1
-        first_confidence = result["confidence_score"]
+        raw_confidence = result["confidence_score"]
+        # Normalize confidence from 0-100 to 0-1 if needed
+        confidence = float(raw_confidence)
+        if confidence > 1:
+            confidence = confidence / 100.0
+        first_confidence = confidence
+
+        print(f"[TRANSLATOR] Translating key: {key}")
+        print(f"[TRANSLATOR] Raw confidence: {raw_confidence}")
+        print(f"[TRANSLATOR] Normalized confidence: {first_confidence:.2f}")
 
         if first_confidence >= self.threshold:
-            print(f"[TRANSLATOR] Translating key: {key}")
             print(f"[TRANSLATOR] Confidence {first_confidence:.2f} – accepted")
             entry = {"source": source_text, "translation": result["translation"]}
             return entry, first_confidence, False, api_calls, False
 
-        print(f"[TRANSLATOR] Translating key: {key}")
         print(f"[TRANSLATOR] Confidence {first_confidence:.2f} below threshold {self.threshold} – retrying...")
         result2 = _translate_api(source_text)
         api_calls = 2
-        retry_confidence = result2["confidence_score"]
+        raw_retry_confidence = result2["confidence_score"]
+        retry_confidence = float(raw_retry_confidence)
+        if retry_confidence > 1:
+            retry_confidence = retry_confidence / 100.0
 
         if retry_confidence >= self.threshold:
             print(f"[TRANSLATOR] Retry confidence: {retry_confidence:.2f} – accepted")
@@ -263,13 +274,16 @@ class ReflectionAgent:
         self.api_key = api_key or GEMINI_API_KEY
 
     def _evaluate_one(self, key, source_text, translated_text):
-        """Call API and parse JSON. Extract LLM output from data['translation'] or data['response']. On parse failure use quality_score=0.5."""
+        """Call /evaluate endpoint and parse JSON. Extract LLM output from data['response']. On parse failure use quality_score=0.5."""
         prompt = REFLECTION_PROMPT_TEMPLATE.format(
             source_text=source_text.replace('"', '\\"'),
             translated_text=translated_text.replace('"', '\\"'),
         )
         try:
-            response, data = _call_gemini(prompt)
+            response = requests.post(EVALUATE_URL, json={"prompt": prompt}, timeout=60)
+            if response.status_code != 200:
+                raise Exception(f"Evaluate API Error: {response.text}")
+            data = response.json()
         except Exception:
             return {
                 "quality_score": 0.5,
@@ -277,14 +291,12 @@ class ReflectionAgent:
                 "suggested_improvement": "",
             }
 
-        # Same pattern as TranslationAgent: extract actual LLM string from API response
-        reflection_text = data.get("translation") or data.get("response")
-        if reflection_text is None or (isinstance(reflection_text, str) and not reflection_text.strip()):
-            reflection_text = _gemini_text_from_data(data)
+        # Extract actual LLM string from /evaluate response
+        reflection_text = data.get("response") or ""
         reflection_text = (reflection_text or "").strip() if isinstance(reflection_text, str) else ""
 
-        print("[REFLECTION] Raw LLM output:")
-        print(reflection_text[:500])
+        print("[REFLECTION] Raw LLM response (first 300 chars):")
+        print(reflection_text[:300])
 
         parsed, extracted_substring = extract_json_from_text(reflection_text)
         print("[REFLECTION] Extracted JSON substring:")
@@ -292,9 +304,6 @@ class ReflectionAgent:
 
         if parsed is None:
             print("[REFLECTION] JSON parsing failed.")
-            truncated = (reflection_text[:300] + "...") if len(reflection_text) > 300 else reflection_text
-            print(f"[REFLECTION] Failed to parse reflection JSON. Raw response logged.")
-            print(f"[REFLECTION] Raw (truncated 300): {truncated}")
             return {
                 "quality_score": 0.5,
                 "issues": "Reflection parsing failed",
@@ -483,12 +492,13 @@ class ValidationAgent:
         quality_scores = []
 
         for key, data in translations.items():
-            confidence = data["confidence"]
+            confidence = data["confidence"]  # Already normalized (0-1)
             quality_score = data.get("quality_score", 0.0)
             entry = data["entry"]
             source = entry["source"]
             translation = entry["translation"]
 
+            # Track metrics for ALL translated keys (not just accepted)
             quality_scores.append(quality_score)
 
             fails_confidence = confidence < self.confidence_threshold
@@ -509,7 +519,9 @@ class ValidationAgent:
                 })
             else:
                 accepted_confidences.append(confidence)
+                print(f"[VALIDATOR] Key {key} passed.")
 
+        # Compute averages AFTER processing all keys
         average_confidence = (sum(accepted_confidences) / len(accepted_confidences)) if accepted_confidences else 0.0
         average_quality_score = (sum(quality_scores) / len(quality_scores)) if quality_scores else 0.0
         low_confidence_count = len(low_confidence_items)
