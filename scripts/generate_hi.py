@@ -46,11 +46,47 @@ def discover_source_files():
     return sorted(files)
 
 
+def discover_target_files():
+    """Discover all hi*.json files in localization directory. Returns sorted list."""
+    if not os.path.exists(LOCALIZATION_DIR):
+        return []
+    files = []
+    for filename in os.listdir(LOCALIZATION_DIR):
+        if filename.startswith("hi") and filename.endswith(".json"):
+            files.append(os.path.join(LOCALIZATION_DIR, filename))
+    return sorted(files)
+
+
 def map_to_target_file(source_file):
     """Map en*.json to corresponding hi*.json."""
     basename = os.path.basename(source_file)
     target_basename = basename.replace("en", "hi", 1)
     return os.path.join(LOCALIZATION_DIR, target_basename)
+
+
+def bootstrap_cache_from_existing_files(translation_cache):
+    """Populate cache from existing hi*.json files. Returns count of entries added."""
+    target_files = discover_target_files()
+    entries_added = 0
+
+    for target_file in target_files:
+        hi_data = load_json_safe(target_file)
+        for key, entry in hi_data.items():
+            if not isinstance(entry, dict):
+                continue
+            source_text = entry.get("source", "").strip()
+            translated_text = entry.get("translation", "")
+            if source_text and translated_text:
+                # Only add if not already in cache (don't overwrite existing entries)
+                if source_text not in translation_cache:
+                    translation_cache[source_text] = {
+                        "translation": translated_text,
+                        "confidence": 1.0,
+                        "quality_score": 1.0,
+                    }
+                    entries_added += 1
+
+    return entries_added
 
 
 def load_translation_cache():
@@ -731,6 +767,12 @@ class LocalizationOrchestrator:
         start_time = time.time()
 
         print("\n[ORCHESTRATOR] Starting incremental localization with change detection...\n")
+
+        # Bootstrap cache from existing hi*.json files
+        entries_added = bootstrap_cache_from_existing_files(self.translation_cache)
+        if entries_added > 0:
+            print(f"[CACHE] Bootstrapped from existing hi files.")
+            print(f"[CACHE] Initial entries loaded: {entries_added}")
 
         # Discover all en*.json files
         source_files = discover_source_files()
