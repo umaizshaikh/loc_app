@@ -277,7 +277,120 @@ class ReflectionAgent:
 
 
 # ---------------------------------------------------------------------------
-# 4. ValidationAgent
+# 4. ImprovementAgent
+# ---------------------------------------------------------------------------
+IMPROVEMENT_PROMPT_TEMPLATE = '''The following Hindi UI translation needs improvement.
+
+Source (English):
+"{source_text}"
+
+Current Translation:
+"{translated_text}"
+
+Issues identified:
+"{issues_from_reflection}"
+
+Provide an improved Hindi translation that:
+- Preserves original meaning
+- Is natural for UI usage
+- Is concise and clear
+
+Return ONLY valid JSON:
+
+{{
+  "improved_translation": "string"
+}}'''
+
+
+class ImprovementAgent:
+    """One self-improvement pass for translations that pass confidence but fail quality."""
+
+    def __init__(self, reflection_agent, confidence_threshold=CONFIDENCE_THRESHOLD, quality_threshold=QUALITY_THRESHOLD):
+        self.reflection_agent = reflection_agent
+        self.confidence_threshold = confidence_threshold
+        self.quality_threshold = quality_threshold
+
+    def _request_improvement(self, source_text, translated_text, issues):
+        """Call Gemini for improved translation. Returns improved text or None on parse failure."""
+        prompt = IMPROVEMENT_PROMPT_TEMPLATE.format(
+            source_text=source_text.replace('"', '\\"'),
+            translated_text=translated_text.replace('"', '\\"'),
+            issues_from_reflection=(issues or "").replace('"', '\\"'),
+        )
+        try:
+            text = _call_gemini(prompt)
+            if "```" in text:
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+            data = json.loads(text)
+            return (data.get("improved_translation") or "").strip() or None
+        except (json.JSONDecodeError, ValueError, Exception):
+            return None
+
+    def improve(self, reflection_result):
+        """Improve only keys where confidence >= threshold and quality < quality_threshold. Re-run reflection on improved."""
+        translations = reflection_result["translations"]
+        trans_stats = reflection_result["stats"]
+        total_improvement_attempts = 0
+        re_reflection_calls = 0
+        result_translations = {}
+
+        for key, data in translations.items():
+            confidence = data["confidence"]
+            quality_score = data.get("quality_score", 0.0)
+            entry = data["entry"]
+            source_text = entry["source"]
+            translated_text = entry["translation"]
+            issues = data.get("issues", "")
+
+            eligible = confidence >= self.confidence_threshold and quality_score < self.quality_threshold
+            was_improved = False
+            out_entry = dict(entry)
+            out_quality = quality_score
+            out_issues = issues
+            out_suggested = data.get("suggested_improvement", "")
+
+            if eligible:
+                print(f"[IMPROVEMENT] Attempting improvement for key: {key}")
+                improved_text = self._request_improvement(source_text, translated_text, issues)
+                if improved_text:
+                    out_entry["translation"] = improved_text
+                    was_improved = True
+                    total_improvement_attempts += 1
+                    print(f"[IMPROVEMENT] Improvement applied.")
+                    refl = self.reflection_agent._evaluate_one(key, source_text, improved_text)
+                    re_reflection_calls += 1
+                    out_quality = refl["quality_score"]
+                    out_issues = refl["issues"]
+                    out_suggested = refl["suggested_improvement"]
+                    print(f"[IMPROVEMENT] New quality score: {out_quality:.2f}")
+
+            result_translations[key] = {
+                "entry": out_entry,
+                "confidence": confidence,
+                "below_threshold": data["below_threshold"],
+                "quality_score": out_quality,
+                "issues": out_issues,
+                "suggested_improvement": out_suggested,
+                "was_improved": was_improved,
+            }
+
+        total_reflection_calls = trans_stats.get("total_reflection_calls", 0) + re_reflection_calls
+
+        return {
+            "translations": result_translations,
+            "stats": {
+                **trans_stats,
+                "total_reflection_calls": total_reflection_calls,
+                "total_improvement_attempts": total_improvement_attempts,
+            },
+        }
+
+
+# ---------------------------------------------------------------------------
+# 5. ValidationAgent
 # ---------------------------------------------------------------------------
 class ValidationAgent:
     """Evaluates translation results against confidence and quality thresholds. Does not re-translate."""
@@ -286,9 +399,9 @@ class ValidationAgent:
         self.confidence_threshold = confidence_threshold
         self.quality_threshold = quality_threshold
 
-    def validate(self, reflection_result):
-        translations = reflection_result["translations"]
-        stats = reflection_result["stats"]
+    def validate(self, improvement_result):
+        translations = improvement_result["translations"]
+        stats = improvement_result["stats"]
 
         low_confidence_items = []
         accepted_confidences = []
@@ -317,6 +430,7 @@ class ValidationAgent:
                     "quality_score": quality_score,
                     "issues": data.get("issues", ""),
                     "suggested_improvement": data.get("suggested_improvement", ""),
+                    "was_improved": data.get("was_improved", False),
                 })
             else:
                 accepted_confidences.append(confidence)
@@ -339,12 +453,13 @@ class ValidationAgent:
                 "low_confidence_count": low_confidence_count,
                 "low_confidence_items": low_confidence_items,
                 "total_reflection_calls": stats.get("total_reflection_calls", 0),
+                "total_improvement_attempts": stats.get("total_improvement_attempts", 0),
             },
         }
 
 
 # ---------------------------------------------------------------------------
-# 5. ReportAgent
+# 6. ReportAgent
 # ---------------------------------------------------------------------------
 class ReportAgent:
     """Generates localization/qa_report.json and prints CI summary block."""
@@ -353,9 +468,9 @@ class ReportAgent:
         self.report_dir = report_dir
         self.report_path = report_path
 
-    def generate(self, detector_result, reflection_result, validation_result, execution_time_seconds):
+    def generate(self, detector_result, improvement_result, validation_result, execution_time_seconds):
         det_stats = detector_result["stats"]
-        refl_stats = reflection_result["stats"]
+        impr_stats = improvement_result["stats"]
         metrics = validation_result["metrics"]
         status = validation_result["status"]
 
@@ -368,6 +483,8 @@ class ReportAgent:
                 item["issues"] = i["issues"]
             if i.get("suggested_improvement"):
                 item["suggested_improvement"] = i["suggested_improvement"]
+            if "was_improved" in i:
+                item["was_improved"] = bool(i["was_improved"])
             low_items_payload.append(item)
 
         report = {
@@ -376,9 +493,10 @@ class ReportAgent:
             "total_strings_in_source": det_stats["total_strings_in_source"],
             "strings_reused": det_stats["strings_reused"],
             "new_or_changed_strings": det_stats["new_or_changed_strings"],
-            "total_api_calls": refl_stats["total_api_calls"],
-            "retries_performed": refl_stats["retries_performed"],
+            "total_api_calls": impr_stats["total_api_calls"],
+            "retries_performed": impr_stats["retries_performed"],
             "total_reflection_calls": metrics.get("total_reflection_calls", 0),
+            "total_improvement_attempts": metrics.get("total_improvement_attempts", 0),
             "average_confidence": round(metrics["average_confidence"], 2),
             "average_quality_score": round(metrics.get("average_quality_score", 0.0), 2),
             "low_confidence_count": metrics["low_confidence_count"],
@@ -400,24 +518,26 @@ class ReportAgent:
         print(f"Quality Threshold: {QUALITY_THRESHOLD}")
         print(f"Average Confidence: {metrics['average_confidence']:.2f}")
         print(f"Average Quality Score: {metrics.get('average_quality_score', 0):.2f}")
-        print(f"API Calls: {refl_stats['total_api_calls']}")
-        print(f"Retries: {refl_stats['retries_performed']}")
+        print(f"API Calls: {impr_stats['total_api_calls']}")
+        print(f"Retries: {impr_stats['retries_performed']}")
         print(f"Reflection Calls: {metrics.get('total_reflection_calls', 0)}")
+        print(f"Improvement Attempts: {metrics.get('total_improvement_attempts', 0)}")
         print(f"Low Confidence Items: {metrics['low_confidence_count']}")
         print(f"Status: {status}")
         print("----------------------------------------")
 
 
 # ---------------------------------------------------------------------------
-# 6. LocalizationOrchestrator
+# 7. LocalizationOrchestrator
 # ---------------------------------------------------------------------------
 class LocalizationOrchestrator:
-    """Runs the pipeline: detect -> translate -> reflection -> validate -> report -> merge & write -> exit."""
+    """Runs the pipeline: detect -> translate -> reflection -> improvement -> validate -> report -> merge & write -> exit."""
 
     def __init__(self):
         self.detector = ChangeDetectorAgent()
         self.translator = TranslationAgent()
         self.reflection = ReflectionAgent()
+        self.improvement = ImprovementAgent(reflection_agent=self.reflection)
         self.validator = ValidationAgent()
         self.reporter = ReportAgent()
 
@@ -429,14 +549,15 @@ class LocalizationOrchestrator:
         detector_result = self.detector.detect()
         translation_result = self.translator.process(detector_result["changes"])
         reflection_result = self.reflection.evaluate(translation_result)
-        validation_result = self.validator.validate(reflection_result)
+        improvement_result = self.improvement.improve(reflection_result)
+        validation_result = self.validator.validate(improvement_result)
 
         elapsed = time.time() - start_time
-        self.reporter.generate(detector_result, reflection_result, validation_result, elapsed)
+        self.reporter.generate(detector_result, improvement_result, validation_result, elapsed)
 
         # Merge reused + new translations and write hi.json
         final_hi = dict(detector_result["existing_translations"])
-        for key, data in reflection_result["translations"].items():
+        for key, data in improvement_result["translations"].items():
             final_hi[key] = data["entry"]
 
         with open(HI_PATH, "w", encoding="utf-8") as f:

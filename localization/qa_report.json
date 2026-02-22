@@ -7,6 +7,7 @@
   "total_api_calls": 0,
   "retries_performed": 0,
   "total_reflection_calls": 0,
+  "total_improvement_attempts": 0,
   "average_confidence": 0.0,
   "average_quality_score": 0.0,
   "low_confidence_count": 0,
