@@ -101,6 +101,31 @@ def save_translation_cache(cache):
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
+def contains_transliteration(text: str) -> bool:
+    """
+    Returns True if text likely contains English transliteration.
+    - Contains any ASCII letter → reject.
+    - Contains common Devanagari transliteration patterns → reject.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    # Any ASCII letter → transliteration
+    for ch in text:
+        if ("a" <= ch <= "z") or ("A" <= ch <= "Z"):
+            return True
+    # Common Devanagari transliterations of English words (phonetic borrowings)
+    transliteration_patterns = (
+        "सबमिट", "डेमो", "फॉर्म", "सब्मिट", "सेव", "एक्सिट", "ओपन",
+        "क्लिक", "लॉगिन", "साइन", "सेटिंग", "मेन्यू", "फाइल", "हेल्प",
+        "अबाउट", "क्लोज", "कैन्सल", "अड्ड", "एडिट", "डिलीट", "रीसेट",
+    )
+    text_lower = text.strip()
+    for pattern in transliteration_patterns:
+        if pattern in text_lower:
+            return True
+    return False
+
+
 def _translate_api(text):
     payload = {
         "source_text": text,
@@ -485,10 +510,13 @@ Current Translation:
 Issues identified:
 "{issues_from_reflection}"
 
-Provide an improved Hindi translation that:
-- Preserves original meaning
-- Is natural for UI usage
-- Is concise and clear
+Provide an improved Hindi translation.
+Use PURE Hindi vocabulary.
+Do NOT transliterate English words.
+Avoid direct phonetic borrowings like 'सबमिट' or 'डेमो'.
+- Preserve original meaning
+- Be natural for UI usage
+- Be concise and clear
 
 Return ONLY valid JSON:
 
@@ -533,6 +561,7 @@ class ImprovementAgent:
         total_improvement_attempts = 0
         re_reflection_calls = 0
         result_translations = {}
+        policy_logged = False
 
         for key, data in translations.items():
             # Skip cached items (already validated and passed)
@@ -555,19 +584,26 @@ class ImprovementAgent:
             out_suggested = data.get("suggested_improvement", "")
 
             if eligible:
+                if not policy_logged:
+                    print(f"[POLICY] Pure Hindi enforcement active.")
+                    policy_logged = True
                 print(f"[IMPROVEMENT] Attempting improvement for key: {key}")
                 improved_text = self._request_improvement(source_text, translated_text, issues)
                 if improved_text:
-                    out_entry["translation"] = improved_text
-                    was_improved = True
-                    total_improvement_attempts += 1
-                    print(f"[IMPROVEMENT] Improvement applied.")
-                    refl = self.reflection_agent._evaluate_one(key, source_text, improved_text)
-                    re_reflection_calls += 1
-                    out_quality = refl["quality_score"]
-                    out_issues = refl["issues"]
-                    out_suggested = refl["suggested_improvement"]
-                    print(f"[IMPROVEMENT] New quality score: {out_quality:.2f}")
+                    if contains_transliteration(improved_text):
+                        print(f"[IMPROVEMENT] Rejected transliteration-based suggestion.")
+                        print(f"[POLICY] Transliteration detected in improvement suggestion.")
+                    else:
+                        out_entry["translation"] = improved_text
+                        was_improved = True
+                        total_improvement_attempts += 1
+                        print(f"[IMPROVEMENT] Improvement applied.")
+                        refl = self.reflection_agent._evaluate_one(key, source_text, improved_text)
+                        re_reflection_calls += 1
+                        out_quality = refl["quality_score"]
+                        out_issues = refl["issues"]
+                        out_suggested = refl["suggested_improvement"]
+                        print(f"[IMPROVEMENT] New quality score: {out_quality:.2f}")
 
             result_translations[key] = {
                 "entry": out_entry,
@@ -626,6 +662,8 @@ class ValidationAgent:
             if fails_confidence or fails_quality:
                 if fails_quality and not fails_confidence:
                     print(f"[VALIDATOR] Key {key} failed quality threshold ({quality_score:.2f} < {self.quality_threshold})")
+                if fails_quality and contains_transliteration(translation):
+                    print(f"[POLICY] Transliteration detected in translation.")
                 low_confidence_items.append({
                     "key": key,
                     "source": source,
