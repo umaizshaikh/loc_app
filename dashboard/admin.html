@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glossary Admin</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1rem; max-width: 900px; }
+    h1 { font-size: 1.25rem; }
+    .stats { background: #f5f5f5; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .stats dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }
+    .stats dt { font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { border: 1px solid #ccc; padding: 0.35rem 0.5rem; text-align: left; }
+    th { background: #eee; }
+    input { width: 100%; box-sizing: border-box; }
+    .actions { margin-top: 0.5rem; }
+    button { margin-right: 0.5rem; padding: 0.4rem 0.75rem; cursor: pointer; }
+    .del { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+    a { color: #0066cc; }
+  </style>
+</head>
+<body>
+  <h1>Glossary Admin</h1>
+  <div class="stats" id="stats">Loading…</div>
+  <h2>Glossary</h2>
+  <table id="glossaryTable">
+    <thead><tr><th>Source term</th><th>Translation</th><th></th></tr></thead>
+    <tbody id="glossaryBody"></tbody>
+  </table>
+  <div class="actions">
+    <button type="button" id="addRow">Add term</button>
+    <button type="button" id="saveBtn">Save (download glossary.json)</button>
+  </div>
+  <p><a href="index.html">← Dashboard index</a></p>
+
+  <script>
+    const GLOSSARY_URL = '../ui/localization/glossary.json';
+    const QA_REPORT_URL = '../ui/localization/qa_report.json';
+    const CACHE_URL = '../localization/translation_cache.json';
+
+    let glossary = {};
+
+    async function loadJson(url) {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      return res.json();
+    }
+
+    async function loadStats() {
+      const [qa, cache] = await Promise.all([loadJson(QA_REPORT_URL), loadJson(CACHE_URL)]);
+      const el = document.getElementById('stats');
+      const entries = typeof glossary === 'object' && !Array.isArray(glossary) ? Object.keys(glossary).length : 0;
+      const cacheSize = cache && typeof cache === 'object' ? Object.keys(cache).length : 0;
+      el.innerHTML = `
+        <dl>
+          <dt>Glossary entries</dt><dd>${entries}</dd>
+          <dt>Last run status</dt><dd>${qa && qa.status != null ? qa.status : '—'}</dd>
+          <dt>Translation cache size</dt><dd>${cacheSize}</dd>
+        </dl>
+      `;
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById('glossaryBody');
+      tbody.innerHTML = '';
+      for (const [key, value] of Object.entries(glossary)) {
+        const tr = document.createElement('tr');
+        tr.dataset.key = key;
+        tr.innerHTML = `
+          <td><input data-key type="text" value="${escapeAttr(key)}" placeholder="Source term"></td>
+          <td><input data-value type="text" value="${escapeAttr(value)}" placeholder="Translation"></td>
+          <td><button type="button" class="del" data-remove>Delete</button></td>
+        `;
+        tr.querySelector('[data-remove]').addEventListener('click', () => { delete glossary[tr.dataset.key]; renderTable(); loadStats(); });
+        tr.querySelector('[data-key]').addEventListener('change', e => {
+          const oldK = tr.dataset.key;
+          const newK = e.target.value.trim();
+          if (newK && newK !== oldK) { glossary[newK] = glossary[oldK]; delete glossary[oldK]; tr.dataset.key = newK; loadStats(); }
+        });
+        tr.querySelector('[data-value]').addEventListener('input', e => { glossary[tr.dataset.key] = e.target.value; });
+        tbody.appendChild(tr);
+      }
+    }
+
+    function escapeAttr(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    document.getElementById('addRow').addEventListener('click', () => {
+      const key = 'New term';
+      glossary[key] = '';
+      renderTable();
+      loadStats();
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', () => {
+      const rows = document.querySelectorAll('#glossaryBody tr');
+      const out = {};
+      rows.forEach(tr => {
+        const k = tr.querySelector('[data-key]').value.trim();
+        const v = tr.querySelector('[data-value]').value;
+        if (k) out[k] = v;
+      });
+      glossary = out;
+      const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'glossary.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      loadStats();
+    });
+
+    (async function () {
+      try {
+        const data = await loadJson(GLOSSARY_URL);
+        glossary = data && typeof data === 'object' && !Array.isArray(data) ? { ...data } : {};
+        renderTable();
+        await loadStats();
+      } catch (e) {
+        document.getElementById('stats').textContent = 'Could not load glossary. Open from a web server or check paths.';
+        console.error(e);
+      }
+    })();
+  </script>
+</body>
+</html>

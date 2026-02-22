@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 
 import requests
 
@@ -22,7 +23,9 @@ HI_PATH = "ui/localization/hi.json"
 GLOSSARY_PATH = os.path.join("ui", "localization", "glossary.json")
 QA_REPORT_DIR = "ui/localization"
 QA_REPORT_PATH = "ui/localization/qa_report.json"
+METRICS_HISTORY_PATH = "ui/localization/metrics_history.json"
 CACHE_PATH = "localization/translation_cache.json"
+MAX_METRICS_HISTORY_ENTRIES = 50
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.95"))
 QUALITY_THRESHOLD = float(os.getenv("QUALITY_THRESHOLD", "0.90"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -102,9 +105,23 @@ def load_glossary():
 
 def save_translation_cache(cache):
     """Save translation cache to disk."""
-    os.makedirs(QA_REPORT_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
     with open(CACHE_PATH, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def append_metrics_history(metrics_entry):
+    """Append one run to metrics_history.json. Keep max MAX_METRICS_HISTORY_ENTRIES."""
+    history = load_json_safe(METRICS_HISTORY_PATH)
+    if not isinstance(history, list):
+        history = []
+    history.append(metrics_entry)
+    if len(history) > MAX_METRICS_HISTORY_ENTRIES:
+        history = history[-MAX_METRICS_HISTORY_ENTRIES:]
+    os.makedirs(QA_REPORT_DIR, exist_ok=True)
+    with open(METRICS_HISTORY_PATH, "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2)
+    print("[METRICS] Appended run to metrics_history.json")
 
 
 def contains_transliteration(text: str) -> bool:
@@ -810,6 +827,19 @@ class ReportAgent:
         os.makedirs(self.report_dir, exist_ok=True)
         with open(self.report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2)
+
+        # Append to metrics history for dashboard
+        metrics_entry = {
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "status": status,
+            "average_confidence": report["average_confidence"],
+            "average_quality": report["average_quality_score"],
+            "api_calls": report["total_api_calls"],
+            "cache_hits": report["cache_hits"],
+            "glossary_hits": report["glossary_hits"],
+            "reflection_calls": report["total_reflection_calls"],
+        }
+        append_metrics_history(metrics_entry)
 
         print(f"[REPORT] QA report generated at {self.report_path}")
 
