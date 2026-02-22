@@ -40,8 +40,8 @@
     "translation": "डिजाइनर"
   },
   "btn_submit": {
-    "source": "Submit",
-    "translation": "जमा करें"
+    "source": "Submit Form",
+    "translation": "फ़ॉर्म जमा करें"
   },
   "btn_clear": {
     "source": "Clear Form",
@@ -56,8 +56,8 @@
     "translation": "तैयार"
   },
   "status_submitted": {
-    "source": "Form Submitted",
-    "translation": "फ़ॉर्म सबमिट किया गया"
+    "source": "Form Submitted Successfully",
+    "translation": "फ़ॉर्म सफलतापूर्वक जमा किया गया।"
   },
   "menu_file": {
     "source": "File",
