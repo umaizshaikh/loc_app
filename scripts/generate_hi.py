@@ -19,6 +19,9 @@ HI_PATH = "ui/localization/hi.json"
 QA_REPORT_DIR = "localization"
 QA_REPORT_PATH = "localization/qa_report.json"
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.95"))
+QUALITY_THRESHOLD = float(os.getenv("QUALITY_THRESHOLD", "0.90"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_REFLECTION_MODEL", "gemini-1.5-flash")
 
 
 def load_json_safe(path):
@@ -39,6 +42,27 @@ def _translate_api(text):
     if response.status_code != 200:
         raise Exception(f"API Error: {response.text}")
     return response.json()
+
+
+def _call_gemini(prompt):
+    """Call Gemini API for reflection. Returns raw text or raises."""
+    if not GEMINI_API_KEY:
+        raise Exception("GEMINI_API_KEY is not set")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {"Content-Type": "application/json"}
+    params = {"key": GEMINI_API_KEY}
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    response = requests.post(url, json=body, headers=headers, params=params, timeout=60)
+    if response.status_code != 200:
+        raise Exception(f"Gemini API Error: {response.text}")
+    data = response.json()
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise Exception("Gemini API returned no candidates")
+    parts = candidates[0].get("content", {}).get("parts") or []
+    if not parts:
+        raise Exception("Gemini API returned no parts")
+    return (parts[0].get("text") or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -157,20 +181,148 @@ class TranslationAgent:
 
 
 # ---------------------------------------------------------------------------
-# 3. ValidationAgent
+# 3. ReflectionAgent
+# ---------------------------------------------------------------------------
+REFLECTION_PROMPT_TEMPLATE = '''Evaluate the quality of the following UI translation.
+
+Source (English):
+"{source_text}"
+
+Translation (Hindi):
+"{translated_text}"
+
+Evaluate:
+- Does it preserve meaning?
+- Is it natural and clear?
+- Is it appropriate for UI context?
+
+Return ONLY valid JSON in this format:
+{{
+  "quality_score": float (0.0–1.0),
+  "issues": "brief explanation",
+  "suggested_improvement": "if needed, otherwise empty string"
+}}'''
+
+
+class ReflectionAgent:
+    """Evaluates newly generated translations via Gemini. Attaches quality_score, issues, suggested_improvement."""
+
+    def __init__(self, api_key=None):
+        self.api_key = api_key or GEMINI_API_KEY
+
+    def _evaluate_one(self, key, source_text, translated_text):
+        """Call Gemini and parse JSON. On failure return quality_score=0.0, issues='Invalid reflection response'."""
+        prompt = REFLECTION_PROMPT_TEMPLATE.format(
+            source_text=source_text.replace('"', '\\"'),
+            translated_text=translated_text.replace('"', '\\"'),
+        )
+        try:
+            text = _call_gemini(prompt)
+            # Extract JSON from response (handle markdown code blocks)
+            if "```" in text:
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+            data = json.loads(text)
+            quality_score = float(data.get("quality_score", 0.0))
+            quality_score = max(0.0, min(1.0, quality_score))
+            return {
+                "quality_score": quality_score,
+                "issues": str(data.get("issues", "") or ""),
+                "suggested_improvement": str(data.get("suggested_improvement", "") or ""),
+            }
+        except (json.JSONDecodeError, ValueError, Exception):
+            return {
+                "quality_score": 0.0,
+                "issues": "Invalid reflection response",
+                "suggested_improvement": "",
+            }
+
+    def evaluate(self, translation_result):
+        """Run reflection on each newly translated key. Enrich and return result + total_reflection_calls."""
+        translations = translation_result["translations"]
+        trans_stats = translation_result["stats"]
+        total_reflection_calls = 0
+        enriched = {}
+
+        for key, data in translations.items():
+            entry = data["entry"]
+            source_text = entry["source"]
+            translated_text = entry["translation"]
+
+            print(f"[REFLECTION] Evaluating key: {key}")
+            reflection = self._evaluate_one(key, source_text, translated_text)
+            total_reflection_calls += 1
+
+            quality_score = reflection["quality_score"]
+            print(f"[REFLECTION] Quality score: {quality_score:.2f}")
+
+            enriched[key] = {
+                "entry": entry,
+                "confidence": data["confidence"],
+                "below_threshold": data["below_threshold"],
+                "quality_score": quality_score,
+                "issues": reflection["issues"],
+                "suggested_improvement": reflection["suggested_improvement"],
+            }
+
+        return {
+            "translations": enriched,
+            "stats": {
+                **trans_stats,
+                "total_reflection_calls": total_reflection_calls,
+            },
+        }
+
+
+# ---------------------------------------------------------------------------
+# 4. ValidationAgent
 # ---------------------------------------------------------------------------
 class ValidationAgent:
-    """Evaluates translation results against confidence threshold. Does not re-translate."""
+    """Evaluates translation results against confidence and quality thresholds. Does not re-translate."""
 
-    def __init__(self, threshold=CONFIDENCE_THRESHOLD):
-        self.threshold = threshold
+    def __init__(self, confidence_threshold=CONFIDENCE_THRESHOLD, quality_threshold=QUALITY_THRESHOLD):
+        self.confidence_threshold = confidence_threshold
+        self.quality_threshold = quality_threshold
 
-    def validate(self, translation_result):
-        stats = translation_result["stats"]
-        accepted = stats["accepted_confidences"]
-        low_confidence_items = stats["low_confidence_items"]
+    def validate(self, reflection_result):
+        translations = reflection_result["translations"]
+        stats = reflection_result["stats"]
 
-        average_confidence = (sum(accepted) / len(accepted)) if accepted else 0.0
+        low_confidence_items = []
+        accepted_confidences = []
+        quality_scores = []
+
+        for key, data in translations.items():
+            confidence = data["confidence"]
+            quality_score = data.get("quality_score", 0.0)
+            entry = data["entry"]
+            source = entry["source"]
+            translation = entry["translation"]
+
+            quality_scores.append(quality_score)
+
+            fails_confidence = confidence < self.confidence_threshold
+            fails_quality = quality_score < self.quality_threshold
+
+            if fails_confidence or fails_quality:
+                if fails_quality and not fails_confidence:
+                    print(f"[VALIDATOR] Key {key} failed quality threshold ({quality_score:.2f} < {self.quality_threshold})")
+                low_confidence_items.append({
+                    "key": key,
+                    "source": source,
+                    "translation": translation,
+                    "confidence": confidence,
+                    "quality_score": quality_score,
+                    "issues": data.get("issues", ""),
+                    "suggested_improvement": data.get("suggested_improvement", ""),
+                })
+            else:
+                accepted_confidences.append(confidence)
+
+        average_confidence = (sum(accepted_confidences) / len(accepted_confidences)) if accepted_confidences else 0.0
+        average_quality_score = (sum(quality_scores) / len(quality_scores)) if quality_scores else 0.0
         low_confidence_count = len(low_confidence_items)
         status = "FAILED" if low_confidence_items else "PASSED"
 
@@ -183,14 +335,16 @@ class ValidationAgent:
             "status": status,
             "metrics": {
                 "average_confidence": average_confidence,
+                "average_quality_score": average_quality_score,
                 "low_confidence_count": low_confidence_count,
                 "low_confidence_items": low_confidence_items,
+                "total_reflection_calls": stats.get("total_reflection_calls", 0),
             },
         }
 
 
 # ---------------------------------------------------------------------------
-# 4. ReportAgent
+# 5. ReportAgent
 # ---------------------------------------------------------------------------
 class ReportAgent:
     """Generates localization/qa_report.json and prints CI summary block."""
@@ -199,25 +353,36 @@ class ReportAgent:
         self.report_dir = report_dir
         self.report_path = report_path
 
-    def generate(self, detector_result, translation_result, validation_result, execution_time_seconds):
+    def generate(self, detector_result, reflection_result, validation_result, execution_time_seconds):
         det_stats = detector_result["stats"]
-        trans_stats = translation_result["stats"]
+        refl_stats = reflection_result["stats"]
         metrics = validation_result["metrics"]
         status = validation_result["status"]
 
+        low_items_payload = []
+        for i in metrics["low_confidence_items"]:
+            item = {"key": i["key"], "source": i["source"], "translation": i["translation"], "confidence": float(i["confidence"])}
+            if "quality_score" in i:
+                item["quality_score"] = float(i["quality_score"])
+            if i.get("issues"):
+                item["issues"] = i["issues"]
+            if i.get("suggested_improvement"):
+                item["suggested_improvement"] = i["suggested_improvement"]
+            low_items_payload.append(item)
+
         report = {
             "threshold": CONFIDENCE_THRESHOLD,
+            "quality_threshold": QUALITY_THRESHOLD,
             "total_strings_in_source": det_stats["total_strings_in_source"],
             "strings_reused": det_stats["strings_reused"],
             "new_or_changed_strings": det_stats["new_or_changed_strings"],
-            "total_api_calls": trans_stats["total_api_calls"],
-            "retries_performed": trans_stats["retries_performed"],
+            "total_api_calls": refl_stats["total_api_calls"],
+            "retries_performed": refl_stats["retries_performed"],
+            "total_reflection_calls": metrics.get("total_reflection_calls", 0),
             "average_confidence": round(metrics["average_confidence"], 2),
+            "average_quality_score": round(metrics.get("average_quality_score", 0.0), 2),
             "low_confidence_count": metrics["low_confidence_count"],
-            "low_confidence_items": [
-                {"key": i["key"], "source": i["source"], "translation": i["translation"], "confidence": float(i["confidence"])}
-                for i in metrics["low_confidence_items"]
-            ],
+            "low_confidence_items": low_items_payload,
             "execution_time_seconds": round(execution_time_seconds, 2),
             "status": status,
         }
@@ -232,23 +397,27 @@ class ReportAgent:
         print("Localization QA Summary")
         print("----------------------------------------")
         print(f"Threshold: {CONFIDENCE_THRESHOLD}")
+        print(f"Quality Threshold: {QUALITY_THRESHOLD}")
         print(f"Average Confidence: {metrics['average_confidence']:.2f}")
-        print(f"API Calls: {trans_stats['total_api_calls']}")
-        print(f"Retries: {trans_stats['retries_performed']}")
+        print(f"Average Quality Score: {metrics.get('average_quality_score', 0):.2f}")
+        print(f"API Calls: {refl_stats['total_api_calls']}")
+        print(f"Retries: {refl_stats['retries_performed']}")
+        print(f"Reflection Calls: {metrics.get('total_reflection_calls', 0)}")
         print(f"Low Confidence Items: {metrics['low_confidence_count']}")
         print(f"Status: {status}")
         print("----------------------------------------")
 
 
 # ---------------------------------------------------------------------------
-# 5. LocalizationOrchestrator
+# 6. LocalizationOrchestrator
 # ---------------------------------------------------------------------------
 class LocalizationOrchestrator:
-    """Runs the pipeline: detect -> translate -> validate -> report -> merge & write -> exit."""
+    """Runs the pipeline: detect -> translate -> reflection -> validate -> report -> merge & write -> exit."""
 
     def __init__(self):
         self.detector = ChangeDetectorAgent()
         self.translator = TranslationAgent()
+        self.reflection = ReflectionAgent()
         self.validator = ValidationAgent()
         self.reporter = ReportAgent()
 
@@ -259,14 +428,15 @@ class LocalizationOrchestrator:
 
         detector_result = self.detector.detect()
         translation_result = self.translator.process(detector_result["changes"])
-        validation_result = self.validator.validate(translation_result)
+        reflection_result = self.reflection.evaluate(translation_result)
+        validation_result = self.validator.validate(reflection_result)
 
         elapsed = time.time() - start_time
-        self.reporter.generate(detector_result, translation_result, validation_result, elapsed)
+        self.reporter.generate(detector_result, reflection_result, validation_result, elapsed)
 
         # Merge reused + new translations and write hi.json
         final_hi = dict(detector_result["existing_translations"])
-        for key, data in translation_result["translations"].items():
+        for key, data in reflection_result["translations"].items():
             final_hi[key] = data["entry"]
 
         with open(HI_PATH, "w", encoding="utf-8") as f:
@@ -280,8 +450,10 @@ class LocalizationOrchestrator:
                 print(f"  Source: {item['source']}")
                 print(f"  Final Translation: {item['translation']}")
                 print(f"  Final Confidence: {item['confidence']:.2f}")
+                if "quality_score" in item:
+                    print(f"  Quality Score: {item['quality_score']:.2f}")
                 print()
-            print(f"[ORCHESTRATOR] Build failed due to translations below {CONFIDENCE_THRESHOLD} confidence threshold.")
+            print(f"[ORCHESTRATOR] Build failed due to translations below {CONFIDENCE_THRESHOLD} confidence or {QUALITY_THRESHOLD} quality threshold.")
             sys.exit(1)
 
         print("\n[ORCHESTRATOR] All translations meet 95% confidence threshold.")
