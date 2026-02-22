@@ -1,0 +1,14 @@
+{
+  "window_title": {
+    "source": "Mini Localization Demo",
+    "translation": "लघु स्थानीयकरण डेमो"
+  },
+  "btn_submit": {
+    "source": "Submit",
+    "translation": "जमा करें"
+  },
+  "test": {
+    "source": "Test",
+    "translation": "जाँच"
+  }
+}
